@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,7 +15,13 @@ if str(ROOT) not in sys.path:
 if str(PROTOTYPE) not in sys.path:
     sys.path.insert(0, str(PROTOTYPE))
 
-from apps.mcp.server import get_semantic_element, mcp, render_project
+from apps.mcp.server import (
+    apply_layout_command,
+    get_semantic_element,
+    get_view,
+    mcp,
+    render_project,
+)
 
 
 class FakeAdapter:
@@ -46,6 +54,8 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
             {
                 "render_sysml",
                 "render_project",
+                "get_view",
+                "apply_layout_command",
                 "get_semantic_element",
             }.issubset(names)
         )
@@ -62,6 +72,49 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("partdef:ElectricalSystem", result.root_semantic_id)
         self.assertEqual(2, len(result.graph["edges"]))
         self.assertIn("batteryPower", result.preview_html)
+
+    @patch("apps.mcp.server.SysONRestAdapter", FakeAdapter)
+    def test_agent_layout_command_is_visible_in_get_view(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(
+                os.environ,
+                {"SYSML_RENDER_STATE_DIR": directory},
+                clear=False,
+            ):
+                first = get_view(
+                    "project-1",
+                    "partdef:ElectricalSystem",
+                    "structure",
+                )
+                part_id = "part:ElectricalSystem.battery"
+                before = next(
+                    node
+                    for node in first.layout["nodes"]
+                    if node["id"] == part_id
+                )
+
+                command = apply_layout_command(
+                    "project-1",
+                    "partdef:ElectricalSystem",
+                    "structure",
+                    part_id,
+                    before["x"] + 90,
+                    before["y"] + 45,
+                )
+                self.assertEqual(first.view_id, command.view_id)
+
+                after_view = get_view(
+                    "project-1",
+                    "partdef:ElectricalSystem",
+                    "structure",
+                )
+                after = next(
+                    node
+                    for node in after_view.layout["nodes"]
+                    if node["id"] == part_id
+                )
+                self.assertEqual(before["x"] + 90, after["x"])
+                self.assertEqual(before["y"] + 45, after["y"])
 
     @patch("apps.mcp.server.SysONRestAdapter", FakeAdapter)
     def test_get_semantic_element(self):

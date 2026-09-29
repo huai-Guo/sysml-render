@@ -22,6 +22,8 @@ from graph_ir import DiagramEdge, DiagramIR, DiagramNode
 from layout import EdgeRoute, LayoutResult, NodeLayout
 from render_projection_html import render_html
 from render_service import RenderService
+from selection import SemanticSelector
+from view_state import FileViewStateStore, ViewIdentity
 
 
 ProjectionProfileName = Literal[
@@ -33,6 +35,7 @@ ProjectionProfileName = Literal[
 
 class RenderToolResult(BaseModel):
     project_id: str = Field(description="SysON project containing the semantic model.")
+    view_id: str = Field(description="Stable renderer view identity.")
     editing_context_id: str | None = Field(
         default=None,
         description="SysON editing context when the tool imported the model.",
@@ -69,6 +72,17 @@ class SemanticElementResult(BaseModel):
     element: dict[str, Any]
 
 
+class LayoutCommandResult(BaseModel):
+    project_id: str
+    view_id: str
+    node_id: str
+    x: float
+    y: float
+    pinned: bool = True
+
+
+
+
 mcp = MCPServer(
     "sysml-render",
     version="0.1.0",
@@ -90,6 +104,12 @@ def _adapter(project_id: str) -> SysONRestAdapter:
             project_id=project_id,
             token=_syson_token(),
         )
+    )
+
+
+def _view_state_store() -> FileViewStateStore:
+    return FileViewStateStore(
+        os.environ.get("SYSML_RENDER_STATE_DIR", ".sysml-render-state")
     )
 
 
@@ -162,10 +182,22 @@ def _render_project(
     diagnostics: Any = None,
 ) -> RenderToolResult:
     snapshot = _adapter(project_id).snapshot()
+    selection = SemanticSelector(snapshot).resolve(
+        select,
+        profile=profile,
+    )
+    identity = ViewIdentity(
+        project_id=project_id,
+        root_semantic_id=selection.element_id,
+        profile=selection.profile,
+    )
+    overrides = _view_state_store().load(identity.id)
+
     result = RenderService().render(
         snapshot,
-        select=select,
-        profile=profile,
+        select=selection.element_id,
+        profile=selection.profile,
+        layout_overrides=overrides,
     )
     preview = render_html(
         _rebuild_ir(result.graph),
@@ -173,6 +205,7 @@ def _render_project(
     )
     return RenderToolResult(
         project_id=project_id,
+        view_id=identity.id,
         editing_context_id=editing_context_id,
         document_id=document_id,
         root_semantic_id=result.root_semantic_id,
@@ -235,6 +268,53 @@ def render_project(
         project_id,
         select=select,
         profile=profile,
+    )
+
+
+@mcp.tool()
+def get_view(
+    project_id: str,
+    root_semantic_id: str,
+    profile: ProjectionProfileName,
+) -> RenderToolResult:
+    """Read a renderer view, including persisted human/Agent layout edits."""
+    return _render_project(
+        project_id,
+        select=root_semantic_id,
+        profile=profile,
+    )
+
+
+@mcp.tool()
+def apply_layout_command(
+    project_id: str,
+    root_semantic_id: str,
+    profile: ProjectionProfileName,
+    node_id: str,
+    x: float,
+    y: float,
+) -> LayoutCommandResult:
+    """Move/pin one visual node without changing SysML semantics."""
+    identity = ViewIdentity(
+        project_id=project_id,
+        root_semantic_id=root_semantic_id,
+        profile=profile,
+    )
+    payload = _view_state_store().update_node(
+        identity=identity,
+        node_id=node_id,
+        x=x,
+        y=y,
+        pinned=True,
+    )
+    node = payload["nodes"][node_id]
+    return LayoutCommandResult(
+        project_id=project_id,
+        view_id=identity.id,
+        node_id=node_id,
+        x=node["x"],
+        y=node["y"],
+        pinned=node["pinned"],
     )
 
 

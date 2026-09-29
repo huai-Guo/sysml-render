@@ -130,6 +130,11 @@ class ProjectionEngineTests(unittest.TestCase):
                 "Motor",
                 "ElectricalSystem",
                 "Vehicle",
+                "PowerPort",
+                "ControlPort",
+                "vehicle",
+                "powerContinuity",
+                "motorControl",
                 "PowerContinuityRequirement",
                 "MotorControlRequirement",
             }.issubset(labels)

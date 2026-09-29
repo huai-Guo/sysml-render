@@ -77,6 +77,70 @@ subscription explorerEvent($input: ExplorerEventInput!) {
 }
 """
 
+GET_REPRESENTATION_DESCRIPTIONS = """
+query getRepresentationDescriptions(
+  $editingContextId: ID!,
+  $objectId: ID!
+) {
+  viewer {
+    editingContext(editingContextId: $editingContextId) {
+      representationDescriptions(objectId: $objectId) {
+        edges {
+          node {
+            id
+            label
+            defaultName
+            documentation
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+CREATE_REPRESENTATION = """
+mutation createRepresentation($input: CreateRepresentationInput!) {
+  createRepresentation(input: $input) {
+    __typename
+    ... on CreateRepresentationSuccessPayload {
+      representation {
+        id
+        __typename
+      }
+    }
+    ... on ErrorPayload {
+      messages { body level }
+    }
+  }
+}
+"""
+
+GET_REPRESENTATIONS = """
+query getRepresentations($editingContextId: ID!) {
+  viewer {
+    editingContext(editingContextId: $editingContextId) {
+      representations {
+        edges {
+          node {
+            id
+            kind
+            label
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+GENERAL_VIEW_DESCRIPTION_ID = (
+    "siriusComponents://representationDescription?"
+    "kind=diagramDescription&sourceKind=view&"
+    "sourceId=8dcd14b0-6259-3193-ad2c-743f394c68e4&"
+    "sourceElementId=db495705-e917-319b-af55-a32ad63f4089"
+)
+
 
 class ProbeError(RuntimeError):
     pass
@@ -360,6 +424,112 @@ class SysONClient:
             import_report=payload.get("report"),
         )
 
+    def representation_descriptions(
+        self,
+        editing_context_id: str,
+        object_id: str,
+    ) -> list[dict[str, Any]]:
+        data = self.graphql(
+            GET_REPRESENTATION_DESCRIPTIONS,
+            {
+                "editingContextId": editing_context_id,
+                "objectId": object_id,
+            },
+        )
+        connection = (
+            data.get("data", {})
+            .get("viewer", {})
+            .get("editingContext", {})
+            .get("representationDescriptions", {})
+        )
+        return [
+            edge.get("node", {})
+            for edge in connection.get("edges", [])
+            if edge.get("node")
+        ]
+
+    def create_general_view(
+        self,
+        editing_context_id: str,
+        object_id: str,
+        name: str = "Phase0 General View",
+    ) -> tuple[str, str]:
+        descriptions = self.representation_descriptions(
+            editing_context_id,
+            object_id,
+        )
+        general = next(
+            (
+                item
+                for item in descriptions
+                if item.get("id") == GENERAL_VIEW_DESCRIPTION_ID
+                or item.get("label") == "General View"
+            ),
+            None,
+        )
+        if not general:
+            available = [
+                {
+                    "id": item.get("id"),
+                    "label": item.get("label"),
+                }
+                for item in descriptions
+            ]
+            raise ProbeError(
+                "General View representation description not available "
+                f"for target; available={available}"
+            )
+
+        description_id = general["id"]
+        data = self.graphql(
+            CREATE_REPRESENTATION,
+            {
+                "input": {
+                    "id": str(uuid.uuid4()),
+                    "editingContextId": editing_context_id,
+                    "representationDescriptionId": description_id,
+                    "objectId": object_id,
+                    "representationName": name,
+                }
+            },
+        )
+        payload = (
+            data.get("data", {})
+            .get("createRepresentation", {})
+        )
+        if payload.get("__typename") != "CreateRepresentationSuccessPayload":
+            raise ProbeError(
+                "create General View failed: "
+                + json.dumps(payload, indent=2)
+            )
+        representation = payload.get("representation") or {}
+        representation_id = representation.get("id")
+        if not representation_id:
+            raise ProbeError(
+                "create General View succeeded without representation.id"
+            )
+        return representation_id, description_id
+
+    def representations(
+        self,
+        editing_context_id: str,
+    ) -> list[dict[str, Any]]:
+        data = self.graphql(
+            GET_REPRESENTATIONS,
+            {"editingContextId": editing_context_id},
+        )
+        connection = (
+            data.get("data", {})
+            .get("viewer", {})
+            .get("editingContext", {})
+            .get("representations", {})
+        )
+        return [
+            edge.get("node", {})
+            for edge in connection.get("edges", [])
+            if edge.get("node")
+        ]
+
     def commits(self, project_id: str) -> list[dict[str, Any]]:
         response = self.session.get(
             f"{self.rest_url}/projects/{project_id}/commits",
@@ -490,7 +660,7 @@ def run_all(args: argparse.Namespace) -> int:
     )
     client = SysONClient(args.url, timeout=args.timeout)
 
-    print(f"[1/8] Healthcheck {args.url}")
+    print(f"[1/10] Healthcheck {args.url}")
     projects = client.healthcheck()
     print(f"      OK - {len(projects)} existing project(s)")
 
@@ -498,18 +668,18 @@ def run_all(args: argparse.Namespace) -> int:
         args.project_name
         or f"sysml-render-phase0-{uuid.uuid4().hex[:8]}"
     )
-    print(f"[2/8] Create project: {project_name}")
+    print(f"[2/10] Create project: {project_name}")
     project_id = client.create_project(project_name)
     print(f"      project_id={project_id}")
 
-    print(f"[3/8] Import fixture: {fixture.name}")
+    print(f"[3/10] Import fixture: {fixture.name}")
     imported = client.upload_sysml(project_id, fixture)
     print(f"      document_id={imported.document_id}")
     if imported.import_report:
         print("      import report:")
         print(imported.import_report)
 
-    print("[4/8] Inspect semantic element inventory")
+    print("[4/10] Inspect semantic element inventory")
     elements = client.elements(project_id)
     missing = check_expected_elements(
         elements, expectations["requiredElements"]
@@ -529,7 +699,7 @@ def run_all(args: argparse.Namespace) -> int:
         "required semantic sentinels found"
     )
 
-    print("[5/8] Export textual SysML")
+    print("[5/10] Export textual SysML")
     exported_before = client.export_document(imported)
     before_path = output_dir / "export-before.sysml"
     before_path.write_text(exported_before, encoding="utf-8")
@@ -546,7 +716,7 @@ def run_all(args: argparse.Namespace) -> int:
     print(f"      OK - wrote {before_path}")
 
     print(
-        "[6/8] Programmatic semantic mutation "
+        "[6/10] Programmatic semantic mutation "
         "through InsertTextualSysMLv2"
     )
     target_spec = expectations["semanticMutationTarget"]
@@ -571,7 +741,7 @@ def run_all(args: argparse.Namespace) -> int:
         f"({target['@id']})"
     )
 
-    print("[7/8] Verify mutation through REST semantic inventory")
+    print("[7/10] Verify mutation through REST semantic inventory")
     elements_after = client.elements(project_id)
     missing_after = check_expected_elements(
         elements_after,
@@ -589,7 +759,7 @@ def run_all(args: argparse.Namespace) -> int:
         )
     print("      OK - semantic mutation is visible through REST")
 
-    print("[8/8] Export after mutation")
+    print("[8/10] Export after mutation")
     exported_after = client.export_document(imported)
     after_path = output_dir / "export-after.sysml"
     after_path.write_text(exported_after, encoding="utf-8")
@@ -601,6 +771,45 @@ def run_all(args: argparse.Namespace) -> int:
             )
     print(f"      OK - wrote {after_path}")
 
+    print("[9/10] Create General View programmatically")
+    representation_id, representation_description_id = (
+        client.create_general_view(
+            imported.editing_context_id,
+            target["@id"],
+        )
+    )
+    print(
+        "      OK - General View created; "
+        f"representation_id={representation_id}"
+    )
+
+    print("[10/10] Verify representation metadata through GraphQL")
+    representations = client.representations(
+        imported.editing_context_id
+    )
+    created_representation = next(
+        (
+            item
+            for item in representations
+            if item.get("id") == representation_id
+        ),
+        None,
+    )
+    if not created_representation:
+        raise ProbeError(
+            "created General View is not visible in "
+            "editingContext.representations"
+        )
+    representations_path = output_dir / "representations.json"
+    representations_path.write_text(
+        json.dumps(representations, indent=2),
+        encoding="utf-8",
+    )
+    print(
+        "      OK - representation metadata visible; "
+        f"kind={created_representation.get('kind')}"
+    )
+
     summary = {
         "server": args.url,
         "projectId": project_id,
@@ -610,6 +819,9 @@ def run_all(args: argparse.Namespace) -> int:
         "elementCountAfter": len(elements_after),
         "fixture": str(fixture.relative_to(repo_root)),
         "semanticMutationTarget": target_spec,
+        "generalViewRepresentationId": representation_id,
+        "generalViewDescriptionId": representation_description_id,
+        "representationKind": created_representation.get("kind"),
         "automatedChecks": "PASS",
         "manualDiagramChecks": "PENDING",
     }

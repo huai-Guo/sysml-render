@@ -141,6 +141,139 @@ GENERAL_VIEW_DESCRIPTION_ID = (
     "sourceElementId=db495705-e917-319b-af55-a32ad63f4089"
 )
 
+DIAGRAM_SUBSCRIPTION = """
+subscription diagramEvent($input: DiagramEventInput!) {
+  diagramEvent(input: $input) {
+    __typename
+    ... on ErrorPayload {
+      messages { body level }
+    }
+    ... on DiagramRefreshedEventPayload {
+      diagram {
+        id
+        targetObjectId
+        metadata { label kind }
+        style { background }
+        layoutData {
+          autoLaidOut
+          nodeLayoutData {
+            id
+            position { x y }
+            size { width height }
+            movedByUser
+            resizedByUser
+          }
+          edgeLayoutData {
+            id
+            bendingPoints { x y }
+          }
+        }
+        nodes {
+          id
+          type
+          targetObjectId
+          targetObjectLabel
+          state
+          pinned
+          insideLabel { id text }
+          childNodes {
+            id
+            type
+            targetObjectId
+            targetObjectLabel
+            state
+            pinned
+            insideLabel { id text }
+            childNodes {
+              id
+              type
+              targetObjectId
+              targetObjectLabel
+              state
+              pinned
+              insideLabel { id text }
+            }
+            borderNodes {
+              id
+              type
+              targetObjectId
+              targetObjectLabel
+              state
+              pinned
+              insideLabel { id text }
+            }
+          }
+          borderNodes {
+            id
+            type
+            targetObjectId
+            targetObjectLabel
+            state
+            pinned
+            insideLabel { id text }
+          }
+        }
+        edges {
+          id
+          type
+          targetObjectId
+          targetObjectLabel
+          sourceId
+          targetId
+          state
+          centerLabel { id text }
+        }
+      }
+      cause
+    }
+  }
+}
+"""
+
+DROP_ON_DIAGRAM = """
+mutation dropOnDiagram($input: DropOnDiagramInput!) {
+  dropOnDiagram(input: $input) {
+    __typename
+    ... on DropOnDiagramSuccessPayload {
+      diagram {
+        id
+        targetObjectId
+        nodes {
+          id
+          targetObjectId
+          targetObjectLabel
+          type
+          childNodes {
+            id
+            targetObjectId
+            targetObjectLabel
+            type
+          }
+          borderNodes {
+            id
+            targetObjectId
+            targetObjectLabel
+            type
+          }
+        }
+        edges {
+          id
+          targetObjectId
+          targetObjectLabel
+          sourceId
+          targetId
+          type
+        }
+      }
+      messages { body level }
+    }
+    ... on ErrorPayload {
+      messages { body level }
+    }
+  }
+}
+"""
+
 
 class ProbeError(RuntimeError):
     pass
@@ -530,6 +663,119 @@ class SysONClient:
             if edge.get("node")
         ]
 
+    def diagram_snapshot(
+        self,
+        editing_context_id: str,
+        diagram_id: str,
+    ) -> dict[str, Any]:
+        operation_id = str(uuid.uuid4())
+        ws = websocket.create_connection(
+            self.subscriptions_url,
+            timeout=self.timeout,
+            subprotocols=["graphql-ws"],
+        )
+        try:
+            ws.send(json.dumps({"type": "connection_init", "payload": {}}))
+            deadline = time.monotonic() + self.timeout
+            started = False
+
+            while time.monotonic() < deadline:
+                raw = ws.recv()
+                message = json.loads(raw)
+
+                if message.get("type") == "connection_ack" and not started:
+                    ws.send(
+                        json.dumps(
+                            {
+                                "id": operation_id,
+                                "type": "start",
+                                "payload": {
+                                    "query": DIAGRAM_SUBSCRIPTION,
+                                    "variables": {
+                                        "input": {
+                                            "id": str(uuid.uuid4()),
+                                            "editingContextId": editing_context_id,
+                                            "diagramId": diagram_id,
+                                        }
+                                    },
+                                },
+                            }
+                        )
+                    )
+                    started = True
+                    continue
+
+                if message.get("type") in {"ka", "connection_ack"}:
+                    continue
+
+                if message.get("type") == "error":
+                    raise ProbeError(
+                        "diagram subscription error: "
+                        + json.dumps(message.get("payload"))
+                    )
+
+                if message.get("type") not in {"data", "next"}:
+                    continue
+
+                event = (
+                    message.get("payload", {})
+                    .get("data", {})
+                    .get("diagramEvent", {})
+                )
+                if event.get("__typename") == "ErrorPayload":
+                    raise ProbeError(
+                        "diagram event returned error: "
+                        + json.dumps(event.get("messages"))
+                    )
+                diagram = event.get("diagram")
+                if diagram:
+                    return diagram
+
+            raise ProbeError(
+                f"timed out reading diagram snapshot: {diagram_id}"
+            )
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    def drop_on_diagram(
+        self,
+        editing_context_id: str,
+        diagram_id: str,
+        semantic_element_ids: list[str],
+        x: float = 0,
+        y: float = 0,
+    ) -> dict[str, Any]:
+        data = self.graphql(
+            DROP_ON_DIAGRAM,
+            {
+                "input": {
+                    "id": str(uuid.uuid4()),
+                    "editingContextId": editing_context_id,
+                    "representationId": diagram_id,
+                    "diagramTargetElementId": diagram_id,
+                    "objectIds": semantic_element_ids,
+                    "startingPositionX": x,
+                    "startingPositionY": y,
+                }
+            },
+        )
+        payload = (
+            data.get("data", {})
+            .get("dropOnDiagram", {})
+        )
+        if payload.get("__typename") != "DropOnDiagramSuccessPayload":
+            raise ProbeError(
+                "dropOnDiagram failed: "
+                + json.dumps(payload, indent=2)
+            )
+        diagram = payload.get("diagram")
+        if not diagram:
+            raise ProbeError("dropOnDiagram succeeded without diagram")
+        return diagram
+
     def commits(self, project_id: str) -> list[dict[str, Any]]:
         response = self.session.get(
             f"{self.rest_url}/projects/{project_id}/commits",
@@ -660,7 +906,7 @@ def run_all(args: argparse.Namespace) -> int:
     )
     client = SysONClient(args.url, timeout=args.timeout)
 
-    print(f"[1/10] Healthcheck {args.url}")
+    print(f"[1/13] Healthcheck {args.url}")
     projects = client.healthcheck()
     print(f"      OK - {len(projects)} existing project(s)")
 
@@ -668,18 +914,18 @@ def run_all(args: argparse.Namespace) -> int:
         args.project_name
         or f"sysml-render-phase0-{uuid.uuid4().hex[:8]}"
     )
-    print(f"[2/10] Create project: {project_name}")
+    print(f"[2/13] Create project: {project_name}")
     project_id = client.create_project(project_name)
     print(f"      project_id={project_id}")
 
-    print(f"[3/10] Import fixture: {fixture.name}")
+    print(f"[3/13] Import fixture: {fixture.name}")
     imported = client.upload_sysml(project_id, fixture)
     print(f"      document_id={imported.document_id}")
     if imported.import_report:
         print("      import report:")
         print(imported.import_report)
 
-    print("[4/10] Inspect semantic element inventory")
+    print("[4/13] Inspect semantic element inventory")
     elements = client.elements(project_id)
     missing = check_expected_elements(
         elements, expectations["requiredElements"]
@@ -699,7 +945,7 @@ def run_all(args: argparse.Namespace) -> int:
         "required semantic sentinels found"
     )
 
-    print("[5/10] Export textual SysML")
+    print("[5/13] Export textual SysML")
     exported_before = client.export_document(imported)
     before_path = output_dir / "export-before.sysml"
     before_path.write_text(exported_before, encoding="utf-8")
@@ -716,7 +962,7 @@ def run_all(args: argparse.Namespace) -> int:
     print(f"      OK - wrote {before_path}")
 
     print(
-        "[6/10] Programmatic semantic mutation "
+        "[6/13] Programmatic semantic mutation "
         "through InsertTextualSysMLv2"
     )
     target_spec = expectations["semanticMutationTarget"]
@@ -741,7 +987,7 @@ def run_all(args: argparse.Namespace) -> int:
         f"({target['@id']})"
     )
 
-    print("[7/10] Verify mutation through REST semantic inventory")
+    print("[7/13] Verify mutation through REST semantic inventory")
     elements_after = client.elements(project_id)
     missing_after = check_expected_elements(
         elements_after,
@@ -759,7 +1005,7 @@ def run_all(args: argparse.Namespace) -> int:
         )
     print("      OK - semantic mutation is visible through REST")
 
-    print("[8/10] Export after mutation")
+    print("[8/13] Export after mutation")
     exported_after = client.export_document(imported)
     after_path = output_dir / "export-after.sysml"
     after_path.write_text(exported_after, encoding="utf-8")
@@ -771,7 +1017,7 @@ def run_all(args: argparse.Namespace) -> int:
             )
     print(f"      OK - wrote {after_path}")
 
-    print("[9/10] Create General View programmatically")
+    print("[9/13] Create General View programmatically")
     representation_id, representation_description_id = (
         client.create_general_view(
             imported.editing_context_id,
@@ -783,7 +1029,7 @@ def run_all(args: argparse.Namespace) -> int:
         f"representation_id={representation_id}"
     )
 
-    print("[10/10] Verify representation metadata through GraphQL")
+    print("[10/13] Verify representation metadata through GraphQL")
     representations = client.representations(
         imported.editing_context_id
     )
@@ -810,6 +1056,91 @@ def run_all(args: argparse.Namespace) -> int:
         f"kind={created_representation.get('kind')}"
     )
 
+    print("[11/13] Read structured diagram snapshot")
+    diagram_before_drop = client.diagram_snapshot(
+        imported.editing_context_id,
+        representation_id,
+    )
+    initial_nodes = diagram_before_drop.get("nodes", [])
+    print(
+        "      OK - diagram subscription works; "
+        f"initial top-level nodes={len(initial_nodes)}"
+    )
+
+    print("[12/13] Expose semantic elements by dropOnDiagram")
+    expose_specs = [
+        ("vehicle", "PartUsage"),
+        ("Requirements", "Package"),
+    ]
+    expose_elements = []
+    for name, type_name in expose_specs:
+        element = find_element(elements_after, name, type_name)
+        if not element or not element.get("@id"):
+            raise ProbeError(
+                f"diagram exposure target missing: {type_name}:{name}"
+            )
+        expose_elements.append(element)
+
+    dropped_diagram = client.drop_on_diagram(
+        imported.editing_context_id,
+        representation_id,
+        [item["@id"] for item in expose_elements],
+    )
+    dropped_target_ids = {
+        node.get("targetObjectId")
+        for node in dropped_diagram.get("nodes", [])
+    }
+    expected_target_ids = {
+        item["@id"] for item in expose_elements
+    }
+    if not expected_target_ids.issubset(dropped_target_ids):
+        raise ProbeError(
+            "dropOnDiagram did not expose expected semantic nodes; "
+            f"expected={expected_target_ids}, actual={dropped_target_ids}"
+        )
+    print(
+        "      OK - diagram contains semantic nodes: "
+        + ", ".join(name for name, _ in expose_specs)
+    )
+
+    print("[13/13] Re-read diagram and verify persistent view semantics")
+    diagram_after_drop = client.diagram_snapshot(
+        imported.editing_context_id,
+        representation_id,
+    )
+    snapshot_path = output_dir / "diagram-after-drop.json"
+    snapshot_path.write_text(
+        json.dumps(diagram_after_drop, indent=2),
+        encoding="utf-8",
+    )
+    final_target_ids = {
+        node.get("targetObjectId")
+        for node in diagram_after_drop.get("nodes", [])
+    }
+    if not expected_target_ids.issubset(final_target_ids):
+        raise ProbeError(
+            "diagram subscription lost exposed nodes after mutation"
+        )
+
+    exported_with_view = client.export_document(imported)
+    view_export_path = output_dir / "export-with-view.sysml"
+    view_export_path.write_text(
+        exported_with_view,
+        encoding="utf-8",
+    )
+    if "Phase0 General View" not in exported_with_view:
+        raise ProbeError(
+            "textual export does not contain created ViewUsage"
+        )
+    if "expose" not in exported_with_view:
+        raise ProbeError(
+            "textual export does not contain view expose semantics"
+        )
+    print(
+        "      OK - diagram nodes persist and textual export "
+        "contains ViewUsage/expose semantics"
+    )
+
     summary = {
         "server": args.url,
         "projectId": project_id,
@@ -822,6 +1153,11 @@ def run_all(args: argparse.Namespace) -> int:
         "generalViewRepresentationId": representation_id,
         "generalViewDescriptionId": representation_description_id,
         "representationKind": created_representation.get("kind"),
+        "initialTopLevelNodeCount": len(initial_nodes),
+        "exposedSemanticElementIds": sorted(expected_target_ids),
+        "finalTopLevelNodeCount": len(
+            diagram_after_drop.get("nodes", [])
+        ),
         "automatedChecks": "PASS",
         "manualDiagramChecks": "PENDING",
     }

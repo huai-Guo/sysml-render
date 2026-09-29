@@ -11,12 +11,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 import requests
+import websocket
 
 DEFAULT_URL = "http://localhost:8080"
 GRAPHQL_ENDPOINT = "/api/graphql"
@@ -53,6 +55,28 @@ mutation InsertTextualSysMLv2($input: InsertTextualSysMLv2Input!) {
 }
 """
 
+EXPLORER_SUBSCRIPTION = """
+subscription explorerEvent($input: ExplorerEventInput!) {
+  explorerEvent(input: $input) {
+    __typename
+    ... on TreeRefreshedEventPayload {
+      id
+      tree {
+        id
+        children {
+          id
+          kind
+          hasChildren
+          label {
+            styledStringFragments { text }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
 
 class ProbeError(RuntimeError):
     pass
@@ -83,6 +107,127 @@ class SysONClient:
     @property
     def rest_url(self) -> str:
         return self.base_url + REST_ENDPOINT
+
+    @property
+    def subscriptions_url(self) -> str:
+        if self.base_url.startswith("https://"):
+            return "wss://" + self.base_url[len("https://"):] + "/subscriptions"
+        if self.base_url.startswith("http://"):
+            return "ws://" + self.base_url[len("http://"):] + "/subscriptions"
+        raise ProbeError(f"unsupported base URL for WebSocket: {self.base_url}")
+
+    @staticmethod
+    def _tree_item_label(item: dict[str, Any]) -> str:
+        fragments = (
+            item.get("label", {})
+            .get("styledStringFragments", [])
+        )
+        return "".join(
+            fragment.get("text", "")
+            for fragment in fragments
+        )
+
+    def discover_document_id(
+        self,
+        editing_context_id: str,
+        preferred_name: str,
+    ) -> str:
+        operation_id = str(uuid.uuid4())
+        representation_id = (
+            "explorer://?treeDescriptionId=explorer_tree_description"
+            "&expandedIds=[]&activeFilterIds=[]"
+        )
+        ws = websocket.create_connection(
+            self.subscriptions_url,
+            timeout=self.timeout,
+            subprotocols=["graphql-ws"],
+        )
+        try:
+            ws.send(json.dumps({"type": "connection_init", "payload": {}}))
+            deadline = time.monotonic() + self.timeout
+            started = False
+
+            while time.monotonic() < deadline:
+                raw = ws.recv()
+                message = json.loads(raw)
+
+                if message.get("type") == "connection_ack" and not started:
+                    ws.send(
+                        json.dumps(
+                            {
+                                "id": operation_id,
+                                "type": "start",
+                                "payload": {
+                                    "query": EXPLORER_SUBSCRIPTION,
+                                    "variables": {
+                                        "input": {
+                                            "id": str(uuid.uuid4()),
+                                            "editingContextId": editing_context_id,
+                                            "representationId": representation_id,
+                                        }
+                                    },
+                                },
+                            }
+                        )
+                    )
+                    started = True
+                    continue
+
+                if message.get("type") in {"ka", "connection_ack"}:
+                    continue
+
+                if message.get("type") == "error":
+                    raise ProbeError(
+                        "Explorer subscription error: "
+                        + json.dumps(message.get("payload"))
+                    )
+
+                if message.get("type") not in {"data", "next"}:
+                    continue
+
+                event = (
+                    message.get("payload", {})
+                    .get("data", {})
+                    .get("explorerEvent", {})
+                )
+                tree = event.get("tree") or {}
+                documents = [
+                    item
+                    for item in tree.get("children", [])
+                    if item.get("kind") == "siriusWeb://document"
+                ]
+                if not documents:
+                    continue
+
+                preferred = preferred_name.lower()
+                preferred_stem = Path(preferred_name).stem.lower()
+                exact = []
+                for item in documents:
+                    label = self._tree_item_label(item).strip().lower()
+                    if label in {preferred, preferred_stem}:
+                        exact.append(item)
+
+                candidates = exact or documents
+                if len(candidates) == 1 and candidates[0].get("id"):
+                    return candidates[0]["id"]
+
+                labels = [
+                    f"{self._tree_item_label(item)}:{item.get('id')}"
+                    for item in documents
+                ]
+                raise ProbeError(
+                    "could not uniquely identify uploaded document; "
+                    f"candidates={labels}"
+                )
+
+            raise ProbeError(
+                "timed out discovering document id from Explorer"
+            )
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
 
     def _json(self, response: requests.Response, context: str) -> Any:
         if not response.ok:
@@ -203,13 +348,10 @@ class SysONClient:
                 "upload failed: " + json.dumps(payload, indent=2)
             )
 
-        document = payload.get("document") or {}
-        document_id = document.get("id")
-        if not document_id:
-            raise ProbeError(
-                "upload succeeded without document.id; "
-                f"payload keys={list(payload.keys())}"
-            )
+        document_id = self.discover_document_id(
+            editing_context_id,
+            file_path.name,
+        )
 
         return ImportedDocument(
             project_id=project_id,

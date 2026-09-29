@@ -204,18 +204,18 @@ function enableDrag(el, node) {{
     }}
     redrawEdges();
   }});
-  el.addEventListener("pointerup", () => {
-    if (start) {
+  el.addEventListener("pointerup", () => {{
+    if (start) {{
       const p = positions.get(node.id);
-      window.parent.postMessage({
+      window.parent.postMessage({{
         type: "sysml-render:layout-change",
         nodeId: node.id,
         x: p.x,
         y: p.y
-      }, "*");
-    }
+      }}, "*");
+    }}
     start = null;
-  });
+  }});
   el.addEventListener("pointercancel", () => start = null);
 }}
 

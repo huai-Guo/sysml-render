@@ -1,0 +1,31 @@
+{
+  "requiredElements": [
+    {"name": "SysmlRenderPhase0", "type": "Package"},
+    {"name": "PowerPort", "type": "PortDefinition"},
+    {"name": "Battery", "type": "PartDefinition"},
+    {"name": "Controller", "type": "PartDefinition"},
+    {"name": "ElectricalSystem", "type": "PartDefinition"},
+    {"name": "Vehicle", "type": "PartDefinition"},
+    {"name": "MaintainabilityRequirement", "type": "RequirementDefinition"},
+    {"name": "VehicleArchitecture", "type": "Package"},
+    {"name": "Requirements", "type": "Package"},
+    {"name": "vehicle", "type": "PartUsage"},
+    {"name": "electrical", "type": "PartUsage"},
+    {"name": "battery", "type": "PartUsage"},
+    {"name": "controller", "type": "PartUsage"},
+    {"name": "powerOut", "type": "PortUsage"},
+    {"name": "powerIn", "type": "PortUsage"},
+    {"name": "maintainability", "type": "RequirementUsage"}
+  ],
+  "semanticMutationTarget": {"name": "VehicleArchitecture", "type": "Package"},
+  "requiredAfterMutation": [
+    {"name": "TelemetryModule", "type": "PartDefinition"},
+    {"name": "telemetry", "type": "PartUsage"}
+  ],
+  "exportSentinels": [
+    "SysmlRenderPhase0",
+    "ElectricalSystem",
+    "VehicleArchitecture",
+    "MaintainabilityRequirement"
+  ]
+}

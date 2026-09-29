@@ -203,9 +203,13 @@ class SysONClient:
                 "upload failed: " + json.dumps(payload, indent=2)
             )
 
-        document_id = payload.get("id")
+        document = payload.get("document") or {}
+        document_id = document.get("id")
         if not document_id:
-            raise ProbeError("upload succeeded without a document id")
+            raise ProbeError(
+                "upload succeeded without document.id; "
+                f"payload keys={list(payload.keys())}"
+            )
 
         return ImportedDocument(
             project_id=project_id,

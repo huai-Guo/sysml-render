@@ -21,12 +21,22 @@ PROFILES: dict[str, ProjectionProfile] = {
         node_kinds=frozenset(
             {
                 "Package",
+                "LibraryPackage",
                 "PartDefinition",
+                "PartUsage",
+                "PortDefinition",
+                "ItemDefinition",
+                "AttributeDefinition",
+                "InterfaceDefinition",
                 "RequirementDefinition",
+                "RequirementUsage",
+                "ActionDefinition",
+                "StateDefinition",
+                "ConstraintDefinition",
             }
         ),
         edge_kinds=frozenset(),
-        max_depth=2,
+        max_depth=3,
     ),
     "structure": ProjectionProfile(
         name="structure",

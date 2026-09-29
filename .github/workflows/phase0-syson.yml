@@ -64,3 +64,51 @@ jobs:
       - name: Stop SysON
         if: always()
         run: docker compose -f infra/syson/docker-compose.yml down -v
+
+  diagram-image-export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Start SysON + Sirius Diagram Image Server
+        run: docker compose -f infra/syson/docker-compose.yml --profile render up -d --build
+      - name: Wait for SysON and image server
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 120); do
+            syson=0
+            images=0
+            curl --fail --silent http://localhost:8080/api/rest/projects >/dev/null && syson=1 || true
+            curl --fail --silent http://localhost:3000/ >/dev/null && images=1 || true
+            if [ "$syson" = 1 ] && [ "$images" = 1 ]; then
+              echo "SysON and image server are ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f infra/syson/docker-compose.yml --profile render logs --tail 200
+          exit 1
+      - name: Create populated General View
+        run: python scripts/syson_phase0.py run-all
+      - name: Export General View as SVG and PNG
+        run: python scripts/syson_phase0.py export-images
+      - name: Upload rendered evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase0-rendered-results
+          path: .phase0-results/
+          if-no-files-found: ignore
+          include-hidden-files: true
+      - name: Logs on failure
+        if: failure()
+        run: docker compose -f infra/syson/docker-compose.yml --profile render logs --tail 300
+      - name: Stop stack
+        if: always()
+        run: docker compose -f infra/syson/docker-compose.yml --profile render down -v
+

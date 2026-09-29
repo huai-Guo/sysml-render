@@ -48,3 +48,24 @@ Delete the Phase-0 database as well:
 - `docs/spikes/` — spike procedure, evidence and decision criteria.
 
 The canonical semantic model remains textual SysML. Diagram/view state is treated separately.
+
+
+### End-to-end SVG / PNG rendering
+
+Start the optional Sirius Web Diagram Image Server:
+
+```powershell
+./scripts/start_syson.ps1 -Render
+python scripts/syson_phase0.py run-all
+python scripts/syson_phase0.py export-images
+```
+
+On success, `.phase0-results/` also contains:
+
+```text
+general-view.svg
+general-view.png
+diagram-after-drop.json
+```
+
+The image server is a rendering/export layer only. SysML semantics remain in the model and the diagram remains an interactive Sirius representation.

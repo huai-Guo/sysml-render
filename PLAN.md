@@ -181,6 +181,149 @@ The first adapter can target SysON.
 
 If SysON later proves too heavy, we can replace that adapter without redesigning the web UI, MCP layer and view model.
 
+### 4.3 Diagram Synthesis / Auto Projection Engine
+
+A critical product responsibility is **automatic diagram synthesis**.
+
+SysON's General View and Interconnection View are intentionally unsynchronized: importing a valid semantic model does not imply that every relevant element and relationship is automatically exposed in a useful diagram. That interaction model is acceptable for a generic modeling workbench, but it is not sufficient for `sysml-render`.
+
+For our product, this belongs to the renderer:
+
+```text
+*.sysml
+   │
+   ▼
+Semantic Model
+   │
+   ▼
+Diagram Synthesis
+   │
+   ├─ choose root / scope
+   ├─ select relevant semantic elements
+   ├─ recursively include owned elements
+   ├─ close over relevant relationships
+   ├─ materialize ports / compartments
+   ├─ choose visual-only containment cues
+   ├─ choose diagram type
+   └─ produce an initial graph
+   │
+   ▼
+Auto Layout + Edge Routing
+   │
+   ▼
+Editable View
+```
+
+The user should **not** have to manually add every existing element or redraw every relationship that already exists in the SysML model.
+
+#### Semantic relationship rule
+
+The renderer may automatically **materialize** a relationship that already exists semantically, but it must not invent a new SysML relationship merely to make the picture look connected.
+
+Example:
+
+```sysml
+connection batteryPower connect
+    battery.powerOut to controller.powerIn;
+```
+
+The first rendered view should automatically contain the corresponding visual edge when both endpoints are in scope.
+
+By contrast, if two parts merely sit next to each other in a package and the model contains no connection/dependency/flow/etc., the renderer must not create a semantic relationship.
+
+It may still use visual-only layout cues such as nesting, grouping, alignment, labels, or background containers.
+
+#### Projection profiles
+
+Automatic rendering should be profile-driven rather than "show every SysML element at once".
+
+Initial profiles:
+
+```text
+package-overview
+  -> packages + important definitions/usages + high-level relationships
+
+structure
+  -> parts + ports + connections/interfaces
+
+requirements
+  -> requirements + satisfy/derive/trace relationships
+
+behavior
+  -> actions/states + flows/successions
+```
+
+Each profile decides:
+
+- root semantic element;
+- traversal depth;
+- included element kinds;
+- included relationship kinds;
+- whether containment becomes nesting or an explicit edge;
+- whether referenced external elements are pulled into scope;
+- compartment visibility;
+- labeling rules;
+- layout direction and grouping.
+
+#### Relationship closure
+
+For a selected node set `N`, derive visible edges from the semantic graph:
+
+```text
+E_visible =
+  semantic relationships
+  whose source and target are visible
+  and whose relationship kind is enabled by the active projection profile
+```
+
+Optionally, a profile may expand one hop to include connected elements:
+
+```text
+seed nodes
+   -> semantic neighbors
+   -> include qualifying neighbor nodes
+   -> include qualifying semantic edges
+```
+
+This is conceptually similar to SysON's "Add existing connected elements", but in `sysml-render` it is an automatic policy executed during initial rendering, not a repetitive manual user action.
+
+#### Layout is also renderer responsibility
+
+After projection, the renderer must generate a readable first layout automatically.
+
+The pipeline is:
+
+```text
+semantic graph
+  -> projection
+  -> nested graph
+  -> layout constraints
+  -> node placement
+  -> edge routing
+  -> editable view state
+```
+
+Likely layout engine candidates include ELK for hierarchical/nested diagrams. The concrete engine can be replaced later.
+
+Manual user moves then become overrides stored in the view state. Auto-layout should preserve pinned/manual elements when possible.
+
+#### Updated boundary with SysON
+
+SysON should therefore be evaluated primarily for:
+
+- SysML parsing/metamodel;
+- semantic identity;
+- validation;
+- semantic mutation;
+- persistence;
+- graphical editing primitives.
+
+We should **not** depend on SysON's default manual exposure workflow as the rendering UX.
+
+If SysON can be programmatically instructed to expose the graph synthesized by our projection engine, we can reuse its representation/editor runtime.
+
+If not, we keep SysON only as a semantic engine and render the synthesized graph through our own graphical layer.
+
 ---
 
 ## 5. Data / file format strategy

@@ -16,6 +16,7 @@ from adapters.syson.rest_adapter import SysONRestAdapter, SysONRestConfig
 from layout import SimpleHierarchicalLayout
 from projection import ProjectionEngine
 from render_projection_html import render_html
+from selection import SemanticSelector
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,8 +27,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--commit-id")
     parser.add_argument("--token")
-    parser.add_argument("--root", required=True, help="Semantic element @id")
-    parser.add_argument("--profile", default="structure")
+    parser.add_argument(
+        "--select",
+        help="Semantic element id, name, or qualifiedName. If omitted, auto-select a single root.",
+    )
+    parser.add_argument(
+        "--root",
+        help="Deprecated alias for --select.",
+    )
+    parser.add_argument(
+        "--profile",
+        help="Projection profile override. Otherwise inferred from semantic kind.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -43,7 +54,15 @@ def main() -> int:
         )
     )
     snapshot = adapter.snapshot()
-    ir = ProjectionEngine(snapshot).project(args.root, args.profile)
+    selector = SemanticSelector(snapshot)
+    selection = selector.resolve(
+        args.select or args.root,
+        profile=args.profile,
+    )
+    ir = ProjectionEngine(snapshot).project(
+        selection.element_id,
+        selection.profile,
+    )
     layout = SimpleHierarchicalLayout().layout(ir)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

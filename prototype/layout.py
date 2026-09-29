@@ -61,7 +61,11 @@ class SimpleHierarchicalLayout:
     PART_GAP = 90.0
     PORT_SIZE = 14.0
 
-    def layout(self, ir: DiagramIR) -> LayoutResult:
+    def layout(
+        self,
+        ir: DiagramIR,
+        overrides: dict[str, dict] | None = None,
+    ) -> LayoutResult:
         node_by_id = {node.id: node for node in ir.nodes}
         root = node_by_id[ir.root_semantic_id]
 
@@ -141,6 +145,9 @@ class SimpleHierarchicalLayout:
                 height=70.0,
             )
 
+        if overrides:
+            self._apply_overrides(layouts, ir, overrides)
+
         routes = []
         for edge in ir.edges:
             source = layouts[edge.source]
@@ -177,6 +184,49 @@ class SimpleHierarchicalLayout:
             nodes=list(layouts.values()),
             edges=routes,
         )
+
+    def _apply_overrides(
+        self,
+        layouts: dict[str, NodeLayout],
+        ir: DiagramIR,
+        overrides: dict[str, dict],
+    ) -> None:
+        by_parent: dict[str, list[str]] = {}
+        for node in ir.nodes:
+            if node.parent_id:
+                by_parent.setdefault(node.parent_id, []).append(node.id)
+
+        for node_id, override in overrides.items():
+            if node_id not in layouts:
+                continue
+            x = override.get("x")
+            y = override.get("y")
+            if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+                continue
+
+            old = layouts[node_id]
+            dx = float(x) - old.x
+            dy = float(y) - old.y
+            layouts[node_id] = NodeLayout(
+                id=old.id,
+                x=float(x),
+                y=float(y),
+                width=old.width,
+                height=old.height,
+            )
+
+            # Context-specific projected features move with their parent part.
+            for child_id in by_parent.get(node_id, []):
+                child = layouts.get(child_id)
+                if child is None:
+                    continue
+                layouts[child_id] = NodeLayout(
+                    id=child.id,
+                    x=child.x + dx,
+                    y=child.y + dy,
+                    width=child.width,
+                    height=child.height,
+                )
 
     def _place_ports(
         self,

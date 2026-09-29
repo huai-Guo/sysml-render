@@ -57,6 +57,7 @@ jobs:
           name: phase0-results
           path: .phase0-results/
           if-no-files-found: ignore
+          include-hidden-files: true
       - name: SysON logs on failure
         if: failure()
         run: docker compose -f infra/syson/docker-compose.yml logs --tail 300 app database

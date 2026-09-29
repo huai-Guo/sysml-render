@@ -49,6 +49,7 @@ SysON is currently used as a semantic backend. sysml-render owns automatic diagr
 - automatically materialize existing semantic relationships as edges;
 - project typed ports/features into usage context;
 - automatically calculate an initial layout;
+- recursively lay out Package/definition/usage containers as nested boxes;
 - render a draggable interactive HTML view;
 - persist manual layout separately from SysML;
 - expose the same renderer through Web, CLI, HTTP and MCP;
@@ -135,7 +136,11 @@ Current tools:
 
 - render_sysml: import textual SysML and automatically synthesize an editable view;
 - render_project: render an existing SysON project;
+- get_view: read a specific renderer view including persisted layout edits;
+- apply_layout_command: move/pin a visual node without changing SysML semantics;
 - get_semantic_element: retrieve one semantic element for Agent reasoning.
+
+Human Web edits and Agent MCP layout edits share the same renderer-owned view state.
 
 render_sysml returns structured Diagram IR, layout data, semantic identifiers, diagnostics, and a self-contained interactive HTML preview.
 

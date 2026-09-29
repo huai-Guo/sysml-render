@@ -1,0 +1,65 @@
+name: Phase 0 SysON spike
+
+on:
+  push:
+    branches:
+      - spike/syson-phase0
+  pull_request:
+    paths:
+      - 'examples/phase0/**'
+      - 'infra/syson/**'
+      - 'scripts/syson_phase0.py'
+      - 'tests/test_syson_phase0.py'
+      - '.github/workflows/phase0-syson.yml'
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - run: python -m py_compile scripts/syson_phase0.py tests/test_syson_phase0.py
+      - run: python -m unittest discover -s tests -v
+
+  syson-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - name: Start SysON v2026.9.0
+        run: docker compose -f infra/syson/docker-compose.yml up -d
+      - name: Wait for SysON
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 90); do
+            if curl --fail --silent http://localhost:8080/api/rest/projects >/dev/null; then
+              echo "SysON is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f infra/syson/docker-compose.yml logs app
+          exit 1
+      - name: Run black-box Phase-0 probe
+        run: python scripts/syson_phase0.py run-all
+      - name: Upload Phase-0 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase0-results
+          path: .phase0-results/
+          if-no-files-found: ignore
+      - name: SysON logs on failure
+        if: failure()
+        run: docker compose -f infra/syson/docker-compose.yml logs --tail 300 app database
+      - name: Stop SysON
+        if: always()
+        run: docker compose -f infra/syson/docker-compose.yml down -v

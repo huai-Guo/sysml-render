@@ -29,6 +29,7 @@ class RenderService:
         *,
         select: str | None = None,
         profile: str | None = None,
+        layout_overrides: dict[str, dict[str, Any]] | None = None,
     ) -> RenderResult:
         selection = SemanticSelector(snapshot).resolve(
             select,
@@ -38,7 +39,10 @@ class RenderService:
             selection.element_id,
             selection.profile,
         )
-        layout = SimpleHierarchicalLayout().layout(ir)
+        layout = SimpleHierarchicalLayout().layout(
+            ir,
+            overrides=layout_overrides,
+        )
 
         return RenderResult(
             root_semantic_id=selection.element_id,

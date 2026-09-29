@@ -236,8 +236,18 @@ class ProjectionEngine:
             if relationship.get("ownerId") != root_id:
                 continue
 
-            source = self._resolve_endpoint(root_id, relationship["sourcePath"])
-            target = self._resolve_endpoint(root_id, relationship["targetPath"])
+            source = self._resolve_relationship_endpoint(
+                ir,
+                root_id,
+                relationship,
+                "source",
+            )
+            target = self._resolve_relationship_endpoint(
+                ir,
+                root_id,
+                relationship,
+                "target",
+            )
             if source is None or target is None:
                 continue
             if source not in visible_node_ids or target not in visible_node_ids:
@@ -254,6 +264,36 @@ class ProjectionEngine:
                     metadata={"semantic": True},
                 )
             )
+
+    def _resolve_relationship_endpoint(
+        self,
+        ir: DiagramIR,
+        owner_id: str,
+        relationship: dict[str, Any],
+        side: str,
+    ) -> str | None:
+        direct_id = relationship.get(f"{side}Id")
+        if isinstance(direct_id, str):
+            visible_ids = {node.id for node in ir.nodes}
+            if direct_id in visible_ids:
+                return direct_id
+
+            # A REST relationship may point at a typed semantic feature while
+            # the diagram contains a context-specific projection of that
+            # feature. Resolve it only when the mapping is unambiguous.
+            projected = [
+                node.id
+                for node in ir.nodes
+                if node.derived and node.semantic_id == direct_id
+            ]
+            if len(projected) == 1:
+                return projected[0]
+
+        path = relationship.get(f"{side}Path")
+        if isinstance(path, list) and all(isinstance(p, str) for p in path):
+            return self._resolve_endpoint(owner_id, path)
+
+        return None
 
     def _resolve_endpoint(
         self,

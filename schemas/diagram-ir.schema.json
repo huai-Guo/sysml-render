@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sysml-render.local/schema/diagram-ir.schema.json",
+  "title": "sysml-render Diagram IR",
+  "type": "object",
+  "required": ["rootSemanticId", "profile", "nodes", "edges"],
+  "properties": {
+    "rootSemanticId": {"type": "string"},
+    "profile": {"type": "string"},
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "semantic_id", "label", "kind", "derived"],
+        "properties": {
+          "id": {"type": "string"},
+          "semantic_id": {"type": "string"},
+          "label": {"type": "string"},
+          "kind": {"type": "string"},
+          "parent_id": {"type": ["string", "null"]},
+          "context_semantic_id": {"type": ["string", "null"]},
+          "derived": {"type": "boolean"},
+          "metadata": {"type": "object"}
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "semantic_id", "kind", "source", "target"],
+        "properties": {
+          "id": {"type": "string"},
+          "semantic_id": {"type": "string"},
+          "kind": {"type": "string"},
+          "source": {"type": "string"},
+          "target": {"type": "string"},
+          "label": {"type": ["string", "null"]},
+          "metadata": {"type": "object"}
+        }
+      }
+    }
+  }
+}

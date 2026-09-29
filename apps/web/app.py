@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
 
 ROOT = Path(__file__).resolve().parents[2]
 PROTOTYPE = ROOT / "prototype"
@@ -24,7 +25,8 @@ from render_projection_html import render_html
 from render_service import RenderService
 from graph_ir import DiagramEdge, DiagramIR, DiagramNode
 from layout import LayoutResult, NodeLayout, EdgeRoute
-from selection import SelectionError
+from selection import SelectionError, SemanticSelector
+from view_state import FileViewStateStore, ViewIdentity
 
 
 app = FastAPI(title="sysml-render", version="0.1.0")
@@ -36,6 +38,21 @@ def syson_url() -> str:
 
 def syson_token() -> str | None:
     return os.environ.get("SYSON_TOKEN") or None
+
+
+def view_state_store() -> FileViewStateStore:
+    return FileViewStateStore(
+        os.environ.get("SYSML_RENDER_STATE_DIR", ".sysml-render-state")
+    )
+
+
+class LayoutUpdate(BaseModel):
+    project_id: str
+    root_semantic_id: str
+    profile: str
+    node_id: str
+    x: float
+    y: float
 
 
 def rebuild_ir(graph: dict) -> DiagramIR:
@@ -164,11 +181,22 @@ def render_sysml(
             )
         )
         snapshot = adapter.snapshot()
+        selection = SemanticSelector(snapshot).resolve(
+            select or None,
+            profile=profile or None,
+        )
+        identity = ViewIdentity(
+            project_id=imported.project_id,
+            root_semantic_id=selection.element_id,
+            profile=selection.profile,
+        )
+        overrides = view_state_store().load(identity.id)
 
         result = RenderService().render(
             snapshot,
-            select=select or None,
-            profile=profile or None,
+            select=selection.element_id,
+            profile=selection.profile,
+            layout_overrides=overrides,
         )
     except (
         SysONImportError,
@@ -187,6 +215,7 @@ def render_sysml(
             "projectId": imported.project_id,
             "editingContextId": imported.editing_context_id,
             "documentId": imported.document_id,
+            "viewId": identity.id,
             "rootSemanticId": result.root_semantic_id,
             "profile": result.profile,
             "graph": result.graph,
@@ -195,6 +224,35 @@ def render_sysml(
             "diagnostics": imported.import_report,
         }
     )
+
+
+@app.post("/api/views/{view_id}/layout")
+def update_layout(
+    view_id: str,
+    update: LayoutUpdate,
+):
+    identity = ViewIdentity(
+        project_id=update.project_id,
+        root_semantic_id=update.root_semantic_id,
+        profile=update.profile,
+    )
+    if identity.id != view_id:
+        raise HTTPException(
+            status_code=409,
+            detail="View identity does not match view id.",
+        )
+
+    payload = view_state_store().update_node(
+        identity=identity,
+        node_id=update.node_id,
+        x=update.x,
+        y=update.y,
+        pinned=True,
+    )
+    return {
+        "viewId": view_id,
+        "node": payload["nodes"][update.node_id],
+    }
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -339,6 +397,7 @@ const form = document.getElementById("render-form");
 const button = document.getElementById("render-button");
 const status = document.getElementById("status");
 const preview = document.getElementById("preview");
+let currentRender = null;
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -355,10 +414,14 @@ form.addEventListener("submit", async (event) => {
       throw new Error(payload.detail || JSON.stringify(payload));
     }
 
+    currentRender = payload;
     preview.srcdoc = payload.previewHtml;
+    const projectInput = form.querySelector('[name="project_id"]');
+    if (projectInput && !projectInput.value) projectInput.value = payload.projectId;
     status.textContent =
       "渲染完成\n" +
       "project: " + payload.projectId + "\n" +
+      "view: " + payload.viewId + "\n" +
       "root: " + payload.rootSemanticId + "\n" +
       "profile: " + payload.profile + "\n" +
       "nodes: " + payload.graph.nodes.length + " / edges: " + payload.graph.edges.length;
@@ -366,6 +429,42 @@ form.addEventListener("submit", async (event) => {
     status.textContent = "失败：\n" + error.message;
   } finally {
     button.disabled = false;
+  }
+});
+
+window.addEventListener("message", async (event) => {
+  const message = event.data;
+  if (!currentRender || !message || message.type !== "sysml-render:layout-change") {
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      "/api/views/" + encodeURIComponent(currentRender.viewId) + "/layout",
+      {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          project_id: currentRender.projectId,
+          root_semantic_id: currentRender.rootSemanticId,
+          profile: currentRender.profile,
+          node_id: message.nodeId,
+          x: message.x,
+          y: message.y
+        })
+      }
+    );
+    if (!response.ok) {
+      const payload = await response.json();
+      throw new Error(payload.detail || "layout save failed");
+    }
+    status.textContent =
+      status.textContent.split("\n布局：")[0] +
+      "\n布局：已保存";
+  } catch (error) {
+    status.textContent =
+      status.textContent.split("\n布局：")[0] +
+      "\n布局：保存失败 - " + error.message;
   }
 });
 </script>

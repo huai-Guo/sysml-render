@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "modelId": "vehicle-model",
+  "elements": [
+    {"id": "pkg:VehicleModel", "name": "VehicleModel", "kind": "Package", "parentId": null},
+    {"id": "pkg:Interfaces", "name": "Interfaces", "kind": "Package", "parentId": "pkg:VehicleModel"},
+    {"id": "portdef:PowerPort", "name": "PowerPort", "kind": "PortDefinition", "parentId": "pkg:Interfaces"},
+    {"id": "portdef:ControlPort", "name": "ControlPort", "kind": "PortDefinition", "parentId": "pkg:Interfaces"},
+
+    {"id": "pkg:Requirements", "name": "Requirements", "kind": "Package", "parentId": "pkg:VehicleModel"},
+    {"id": "reqdef:PowerContinuityRequirement", "name": "PowerContinuityRequirement", "kind": "RequirementDefinition", "parentId": "pkg:Requirements"},
+    {"id": "reqdef:MotorControlRequirement", "name": "MotorControlRequirement", "kind": "RequirementDefinition", "parentId": "pkg:Requirements"},
+
+    {"id": "pkg:Definitions", "name": "Definitions", "kind": "Package", "parentId": "pkg:VehicleModel"},
+
+    {"id": "partdef:Battery", "name": "Battery", "kind": "PartDefinition", "parentId": "pkg:Definitions"},
+    {"id": "port:Battery.powerOut", "name": "powerOut", "kind": "PortUsage", "parentId": "partdef:Battery", "typeRef": "portdef:PowerPort"},
+
+    {"id": "partdef:Controller", "name": "Controller", "kind": "PartDefinition", "parentId": "pkg:Definitions"},
+    {"id": "port:Controller.powerIn", "name": "powerIn", "kind": "PortUsage", "parentId": "partdef:Controller", "typeRef": "portdef:PowerPort"},
+    {"id": "port:Controller.motorCommand", "name": "motorCommand", "kind": "PortUsage", "parentId": "partdef:Controller", "typeRef": "portdef:ControlPort"},
+
+    {"id": "partdef:Motor", "name": "Motor", "kind": "PartDefinition", "parentId": "pkg:Definitions"},
+    {"id": "port:Motor.powerIn", "name": "powerIn", "kind": "PortUsage", "parentId": "partdef:Motor", "typeRef": "portdef:PowerPort"},
+    {"id": "port:Motor.commandIn", "name": "commandIn", "kind": "PortUsage", "parentId": "partdef:Motor", "typeRef": "portdef:ControlPort"},
+
+    {"id": "partdef:ElectricalSystem", "name": "ElectricalSystem", "kind": "PartDefinition", "parentId": "pkg:Definitions"},
+    {"id": "part:ElectricalSystem.battery", "name": "battery", "kind": "PartUsage", "parentId": "partdef:ElectricalSystem", "typeRef": "partdef:Battery"},
+    {"id": "part:ElectricalSystem.controller", "name": "controller", "kind": "PartUsage", "parentId": "partdef:ElectricalSystem", "typeRef": "partdef:Controller"},
+    {"id": "part:ElectricalSystem.motor", "name": "motor", "kind": "PartUsage", "parentId": "partdef:ElectricalSystem", "typeRef": "partdef:Motor"},
+
+    {"id": "partdef:Vehicle", "name": "Vehicle", "kind": "PartDefinition", "parentId": "pkg:Definitions"},
+    {"id": "part:Vehicle.electrical", "name": "electrical", "kind": "PartUsage", "parentId": "partdef:Vehicle", "typeRef": "partdef:ElectricalSystem"},
+
+    {"id": "pkg:Usages", "name": "Usages", "kind": "Package", "parentId": "pkg:VehicleModel"},
+    {"id": "part:vehicle", "name": "vehicle", "kind": "PartUsage", "parentId": "pkg:Usages", "typeRef": "partdef:Vehicle"},
+    {"id": "req:powerContinuity", "name": "powerContinuity", "kind": "RequirementUsage", "parentId": "pkg:Usages", "typeRef": "reqdef:PowerContinuityRequirement"},
+    {"id": "req:motorControl", "name": "motorControl", "kind": "RequirementUsage", "parentId": "pkg:Usages", "typeRef": "reqdef:MotorControlRequirement"}
+  ],
+  "relationships": [
+    {
+      "id": "conn:ElectricalSystem.batteryPower",
+      "name": "batteryPower",
+      "kind": "ConnectionUsage",
+      "ownerId": "partdef:ElectricalSystem",
+      "sourcePath": ["battery", "powerOut"],
+      "targetPath": ["controller", "powerIn"]
+    },
+    {
+      "id": "conn:ElectricalSystem.motorControl",
+      "name": "motorControl",
+      "kind": "ConnectionUsage",
+      "ownerId": "partdef:ElectricalSystem",
+      "sourcePath": ["controller", "motorCommand"],
+      "targetPath": ["motor", "commandIn"]
+    }
+  ]
+}

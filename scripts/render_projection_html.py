@@ -84,8 +84,16 @@ def render_html(ir, layout) -> str:
     box-shadow: 0 4px 12px rgba(31, 45, 75, .08);
     user-select: none;
   }}
-  .part {{ cursor: grab; padding: 15px; }}
+  .part {{ cursor: grab; padding: 15px; z-index: 3; }}
   .part:active {{ cursor: grabbing; }}
+  .container-node {{
+    cursor: grab;
+    padding: 12px 14px;
+    background: rgba(241, 245, 251, .82);
+    border: 1.5px solid #8d9bb0;
+    box-shadow: 0 3px 10px rgba(31, 45, 75, .05);
+  }}
+  .container-node:active {{ cursor: grabbing; }}
   .node-kind {{ color: #65738a; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }}
   .node-label {{ font-weight: 650; margin-top: 6px; }}
   .port {{
@@ -131,6 +139,31 @@ const selection = document.getElementById("selection");
 const graphNodes = new Map(data.graph.nodes.map(n => [n.id, n]));
 const positions = new Map(data.layout.nodes.map(n => [n.id, {{...n}}]));
 const edgeDefs = new Map(data.graph.edges.map(e => [e.id, e]));
+const childIds = new Map();
+for (const node of data.graph.nodes) {{
+  if (!node.parent_id) continue;
+  if (!childIds.has(node.parent_id)) childIds.set(node.parent_id, []);
+  childIds.get(node.parent_id).push(node.id);
+}}
+
+function descendants(id) {{
+  const result = [];
+  for (const childId of childIds.get(id) || []) {{
+    result.push(childId);
+    result.push(...descendants(childId));
+  }}
+  return result;
+}}
+
+function depthOf(node) {{
+  let depth = 0;
+  let current = node;
+  while (current && current.parent_id) {{
+    depth += 1;
+    current = graphNodes.get(current.parent_id);
+  }}
+  return depth;
+}}
 
 canvas.style.width = data.layout.width + "px";
 canvas.style.height = data.layout.height + "px";
@@ -154,7 +187,12 @@ function createNode(node) {{
     el.className = "port";
     el.dataset.label = node.label;
   }} else {{
-    el.className = "node part";
+    const hasNestedChildren = (childIds.get(node.id) || [])
+      .some(childId => !graphNodes.get(childId).derived);
+    el.className = hasNestedChildren
+      ? "node container-node"
+      : "node part";
+    el.style.zIndex = String(2 + depthOf(node));
     el.innerHTML =
       '<div class="node-kind">' + node.kind + '</div>' +
       '<div class="node-label">' + node.label + '</div>';
@@ -194,11 +232,15 @@ function enableDrag(el, node) {{
     el.style.left = p.x + "px";
     el.style.top = p.y + "px";
 
-    for (const child of data.graph.nodes.filter(n => n.parent_id === node.id && n.derived)) {{
-      const cp = positions.get(child.id);
+    for (const childId of descendants(node.id)) {{
+      const cp = positions.get(childId);
+      if (!cp) continue;
       cp.x += p.x - oldX;
       cp.y += p.y - oldY;
-      const childEl = canvas.querySelector('[data-id="' + CSS.escape(child.id) + '"]');
+      const childEl = canvas.querySelector(
+        '[data-id="' + CSS.escape(childId) + '"]'
+      );
+      if (!childEl) continue;
       childEl.style.left = cp.x + "px";
       childEl.style.top = cp.y + "px";
     }}

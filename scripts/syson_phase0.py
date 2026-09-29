@@ -1311,6 +1311,99 @@ def run_all(args: argparse.Namespace) -> int:
     return 0
 
 
+def export_images(args: argparse.Namespace) -> int:
+    repo_root = Path(__file__).resolve().parents[1]
+    summary_path = (repo_root / args.summary).resolve()
+    output_dir = (repo_root / args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if not summary_path.exists():
+        raise ProbeError(
+            f"Phase-0 summary does not exist: {summary_path}"
+        )
+
+    summary = json.loads(
+        summary_path.read_text(encoding="utf-8")
+    )
+    editing_context_id = summary.get("editingContextId")
+    diagram_id = summary.get("generalViewRepresentationId")
+    if not editing_context_id or not diagram_id:
+        raise ProbeError(
+            "summary is missing editingContextId or "
+            "generalViewRepresentationId"
+        )
+
+    base = args.image_server_url.rstrip("/")
+    svg_url = (
+        f"{base}/api/svg-diagram/"
+        f"{editing_context_id}/{diagram_id}"
+    )
+    png_url = (
+        f"{base}/api/png-diagram/"
+        f"{editing_context_id}/{diagram_id}"
+    )
+
+    print("[image 1/2] Export SVG")
+    svg_response = requests.get(
+        svg_url,
+        timeout=args.timeout,
+    )
+    if not svg_response.ok:
+        raise ProbeError(
+            f"SVG export HTTP {svg_response.status_code}: "
+            f"{svg_response.text[:1000]}"
+        )
+    content_type = svg_response.headers.get("Content-Type", "")
+    svg_text = svg_response.text
+    if "image/svg+xml" not in content_type:
+        raise ProbeError(
+            f"unexpected SVG content type: {content_type}"
+        )
+    if "<svg" not in svg_text:
+        raise ProbeError("SVG response does not contain an <svg> root")
+    svg_path = output_dir / "general-view.svg"
+    svg_path.write_text(svg_text, encoding="utf-8")
+    print(
+        f"      OK - {len(svg_response.content)} bytes -> {svg_path}"
+    )
+
+    print("[image 2/2] Export PNG")
+    png_response = requests.get(
+        png_url,
+        timeout=args.timeout,
+    )
+    if not png_response.ok:
+        raise ProbeError(
+            f"PNG export HTTP {png_response.status_code}: "
+            f"{png_response.text[:1000]}"
+        )
+    png_content_type = png_response.headers.get("Content-Type", "")
+    if "image/png" not in png_content_type:
+        raise ProbeError(
+            f"unexpected PNG content type: {png_content_type}"
+        )
+    if not png_response.content.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ProbeError("PNG response has an invalid signature")
+    png_path = output_dir / "general-view.png"
+    png_path.write_bytes(png_response.content)
+    print(
+        f"      OK - {len(png_response.content)} bytes -> {png_path}"
+    )
+
+    summary["imageExport"] = {
+        "server": base,
+        "svg": str(svg_path.relative_to(repo_root)),
+        "png": str(png_path.relative_to(repo_root)),
+        "status": "PASS",
+    }
+    summary_path.write_text(
+        json.dumps(summary, indent=2),
+        encoding="utf-8",
+    )
+    print("DIAGRAM IMAGE EXPORT PASS")
+    return 0
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="SysON Phase-0 black-box integration probe"
@@ -1355,6 +1448,24 @@ def parse_args() -> argparse.Namespace:
     health.add_argument("--url", default=DEFAULT_URL)
     health.add_argument("--timeout", type=int, default=10)
 
+    images = sub.add_parser(
+        "export-images",
+        help="export SVG/PNG for the diagram recorded by run-all",
+    )
+    images.add_argument(
+        "--image-server-url",
+        default="http://localhost:3000",
+    )
+    images.add_argument(
+        "--summary",
+        default=".phase0-results/phase0-summary.json",
+    )
+    images.add_argument(
+        "--output-dir",
+        default=".phase0-results",
+    )
+    images.add_argument("--timeout", type=int, default=60)
+
     return parser.parse_args()
 
 
@@ -1370,6 +1481,22 @@ def main() -> int:
             f"{len(projects)} project(s)"
         )
         return 0
+
+    if args.command == "export-images":
+        try:
+            return export_images(args)
+        except ProbeError as exc:
+            print(
+                f"IMAGE EXPORT FAILED: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        except requests.RequestException as exc:
+            print(
+                f"IMAGE EXPORT FAILED: network error: {exc}",
+                file=sys.stderr,
+            )
+            return 3
 
     try:
         return args.func(args)

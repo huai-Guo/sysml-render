@@ -776,6 +776,108 @@ class SysONClient:
             raise ProbeError("dropOnDiagram succeeded without diagram")
         return diagram
 
+    def drop_on_live_diagram(
+        self,
+        editing_context_id: str,
+        diagram_id: str,
+        semantic_element_id: str,
+        x: float = 0,
+        y: float = 0,
+    ) -> dict[str, Any]:
+        """Keep the diagram event processor alive while applying a DnD mutation.
+
+        Sirius collaborative diagram mutations are executed against an active
+        representation subscription. SysON's own integration tests follow this
+        lifecycle: subscribe -> receive initial diagram -> mutate -> receive
+        refreshed diagram.
+        """
+        operation_id = str(uuid.uuid4())
+        ws = websocket.create_connection(
+            self.subscriptions_url,
+            timeout=self.timeout,
+            subprotocols=["graphql-ws"],
+        )
+        try:
+            ws.send(json.dumps({"type": "connection_init", "payload": {}}))
+            deadline = time.monotonic() + self.timeout
+            started = False
+            initial_seen = False
+
+            while time.monotonic() < deadline:
+                raw = ws.recv()
+                message = json.loads(raw)
+
+                if message.get("type") == "connection_ack" and not started:
+                    ws.send(
+                        json.dumps(
+                            {
+                                "id": operation_id,
+                                "type": "start",
+                                "payload": {
+                                    "query": DIAGRAM_SUBSCRIPTION,
+                                    "variables": {
+                                        "input": {
+                                            "id": str(uuid.uuid4()),
+                                            "editingContextId": editing_context_id,
+                                            "diagramId": diagram_id,
+                                        }
+                                    },
+                                },
+                            }
+                        )
+                    )
+                    started = True
+                    continue
+
+                if message.get("type") in {"ka", "connection_ack"}:
+                    continue
+
+                if message.get("type") == "error":
+                    raise ProbeError(
+                        "live diagram subscription error: "
+                        + json.dumps(message.get("payload"))
+                    )
+
+                if message.get("type") not in {"data", "next"}:
+                    continue
+
+                event = (
+                    message.get("payload", {})
+                    .get("data", {})
+                    .get("diagramEvent", {})
+                )
+                if event.get("__typename") == "ErrorPayload":
+                    raise ProbeError(
+                        "live diagram event error: "
+                        + json.dumps(event.get("messages"))
+                    )
+
+                diagram = event.get("diagram")
+                if not diagram:
+                    continue
+
+                if not initial_seen:
+                    initial_seen = True
+                    self.drop_on_diagram(
+                        editing_context_id,
+                        diagram_id,
+                        [semantic_element_id],
+                        x=x,
+                        y=y,
+                    )
+                    continue
+
+                return diagram
+
+            raise ProbeError(
+                "timed out waiting for diagram refresh after drop"
+            )
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
     def commits(self, project_id: str) -> list[dict[str, Any]]:
         response = self.session.get(
             f"{self.rest_url}/projects/{project_id}/commits",
@@ -1081,21 +1183,26 @@ def run_all(args: argparse.Namespace) -> int:
             )
         expose_elements.append(element)
 
-    dropped_diagram = client.drop_on_diagram(
-        imported.editing_context_id,
-        representation_id,
-        [item["@id"] for item in expose_elements],
-    )
-    dropped_target_ids = {
-        node.get("targetObjectId")
-        for node in dropped_diagram.get("nodes", [])
-    }
+    dropped_diagram = None
+    for index, item in enumerate(expose_elements):
+        dropped_diagram = client.drop_on_live_diagram(
+            imported.editing_context_id,
+            representation_id,
+            item["@id"],
+            x=float(index * 320),
+            y=0.0,
+        )
+
     expected_target_ids = {
         item["@id"] for item in expose_elements
     }
+    dropped_target_ids = {
+        node.get("targetObjectId")
+        for node in (dropped_diagram or {}).get("nodes", [])
+    }
     if not expected_target_ids.issubset(dropped_target_ids):
         raise ProbeError(
-            "dropOnDiagram did not expose expected semantic nodes; "
+            "live drop did not expose expected semantic nodes; "
             f"expected={expected_target_ids}, actual={dropped_target_ids}"
         )
     print(

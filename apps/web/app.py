@@ -10,10 +10,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 ROOT = Path(__file__).resolve().parents[2]
 PROTOTYPE = ROOT / "prototype"
+SCRIPTS = ROOT / "scripts"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(PROTOTYPE) not in sys.path:
     sys.path.insert(0, str(PROTOTYPE))
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
 
 from adapters.syson.importer import SysONImportError, SysONImporter
 from adapters.syson.rest_adapter import SysONAdapterError, SysONRestAdapter, SysONRestConfig

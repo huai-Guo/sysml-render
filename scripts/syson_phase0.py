@@ -1193,21 +1193,47 @@ def run_all(args: argparse.Namespace) -> int:
             y=0.0,
         )
 
-    expected_target_ids = {
+    expected_rest_ids = {
         item["@id"] for item in expose_elements
     }
-    dropped_target_ids = {
-        node.get("targetObjectId")
-        for node in (dropped_diagram or {}).get("nodes", [])
+    expected_labels = {
+        name for name, _ in expose_specs
     }
-    if not expected_target_ids.issubset(dropped_target_ids):
+    dropped_nodes = (dropped_diagram or {}).get("nodes", [])
+    dropped_labels = {
+        node.get("targetObjectLabel")
+        for node in dropped_nodes
+    }
+    if not expected_labels.issubset(dropped_labels):
         raise ProbeError(
             "live drop did not expose expected semantic nodes; "
-            f"expected={expected_target_ids}, actual={dropped_target_ids}"
+            f"expected labels={expected_labels}, actual={dropped_labels}"
         )
+
+    id_mapping = []
+    by_name = {
+        element_name(item): item
+        for item in expose_elements
+    }
+    for node in dropped_nodes:
+        label = node.get("targetObjectLabel")
+        if label in by_name:
+            id_mapping.append(
+                {
+                    "name": label,
+                    "sysmlElementId": by_name[label].get("@id"),
+                    "diagramTargetObjectId": node.get("targetObjectId"),
+                    "diagramNodeId": node.get("id"),
+                }
+            )
+
     print(
         "      OK - diagram contains semantic nodes: "
-        + ", ".join(name for name, _ in expose_specs)
+        + ", ".join(sorted(expected_labels))
+    )
+    print(
+        "      INFO - REST elementId and Sirius diagram targetObjectId "
+        "are distinct identity domains for project elements"
     )
 
     print("[13/13] Re-read diagram and verify persistent view semantics")
@@ -1220,11 +1246,11 @@ def run_all(args: argparse.Namespace) -> int:
         json.dumps(diagram_after_drop, indent=2),
         encoding="utf-8",
     )
-    final_target_ids = {
-        node.get("targetObjectId")
+    final_labels = {
+        node.get("targetObjectLabel")
         for node in diagram_after_drop.get("nodes", [])
     }
-    if not expected_target_ids.issubset(final_target_ids):
+    if not expected_labels.issubset(final_labels):
         raise ProbeError(
             "diagram subscription lost exposed nodes after mutation"
         )
@@ -1261,7 +1287,8 @@ def run_all(args: argparse.Namespace) -> int:
         "generalViewDescriptionId": representation_description_id,
         "representationKind": created_representation.get("kind"),
         "initialTopLevelNodeCount": len(initial_nodes),
-        "exposedSemanticElementIds": sorted(expected_target_ids),
+        "exposedSemanticElementIds": sorted(expected_rest_ids),
+        "diagramIdentityMapping": id_mapping,
         "finalTopLevelNodeCount": len(
             diagram_after_drop.get("nodes", [])
         ),

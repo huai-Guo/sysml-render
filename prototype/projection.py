@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from graph_ir import DiagramEdge, DiagramIR, DiagramNode
+from semantic_resolution import FeatureResolution, SemanticFeatureResolver
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,7 @@ class ProjectionEngine:
 
     def __init__(self, snapshot: dict[str, Any]):
         self.index = SemanticIndex(snapshot)
+        self.feature_resolver = SemanticFeatureResolver(self.index.elements)
 
     def project(self, root_id: str, profile_name: str) -> DiagramIR:
         if profile_name not in PROFILES:
@@ -301,42 +303,73 @@ class ProjectionEngine:
 
         path = relationship.get(f"{side}Path")
         if isinstance(path, list) and all(isinstance(p, str) for p in path):
-            return self._resolve_endpoint(owner_id, path)
+            resolution = self.feature_resolver.resolve(owner_id, path)
+            if resolution is None:
+                return None
+            return self._ensure_resolution_nodes(ir, resolution)
 
         return None
 
-    def _resolve_endpoint(
+    def _ensure_resolution_nodes(
         self,
-        owner_id: str,
-        feature_path: list[str],
+        ir: DiagramIR,
+        resolution: FeatureResolution,
     ) -> str | None:
-        if not feature_path:
-            return None
+        existing = {node.id: node for node in ir.nodes}
+        diagram_parent_id = ir.root_semantic_id
 
-        current = self.index.child_named(owner_id, feature_path[0])
-        if current is None:
-            return None
+        for index, step in enumerate(resolution.steps):
+            if step.semantic_id in existing and not step.via_type:
+                diagram_id = step.semantic_id
+            elif step.via_type:
+                diagram_id = self._typed_feature_node_id(
+                    diagram_parent_id,
+                    step.semantic_id,
+                )
+                if diagram_id not in existing:
+                    node = DiagramNode(
+                        id=diagram_id,
+                        semantic_id=step.semantic_id,
+                        context_semantic_id=(
+                            resolution.steps[index - 1].semantic_id
+                            if index > 0
+                            else step.context_semantic_id
+                        ),
+                        label=step.name,
+                        kind=step.kind,
+                        parent_id=diagram_parent_id,
+                        derived=True,
+                        metadata={
+                            "projectionKind": "typed-feature-chain",
+                            "featurePath": list(resolution.path[: index + 1]),
+                        },
+                    )
+                    ir.nodes.append(node)
+                    existing[diagram_id] = node
+            else:
+                # A directly owned semantic feature may not have been selected
+                # by the profile. Materialize it only because an existing
+                # semantic relationship needs it as an endpoint/context.
+                diagram_id = step.semantic_id
+                if diagram_id not in existing:
+                    node = DiagramNode(
+                        id=diagram_id,
+                        semantic_id=step.semantic_id,
+                        label=step.name,
+                        kind=step.kind,
+                        parent_id=diagram_parent_id,
+                        derived=True,
+                        metadata={
+                            "projectionKind": "relationship-endpoint",
+                            "featurePath": list(resolution.path[: index + 1]),
+                        },
+                    )
+                    ir.nodes.append(node)
+                    existing[diagram_id] = node
 
-        if len(feature_path) == 1:
-            return current["id"]
+            diagram_parent_id = diagram_id
 
-        if current["kind"] != "PartUsage":
-            return None
-
-        type_ref = current.get("typeRef")
-        if not type_ref:
-            return None
-
-        typed_feature = self.index.child_named(type_ref, feature_path[1])
-        if typed_feature is None:
-            return None
-
-        if len(feature_path) != 2:
-            # Deeper feature chaining is intentionally deferred until the
-            # adapter provides a complete SysML feature-chain resolver.
-            return None
-
-        return self._typed_feature_node_id(current["id"], typed_feature["id"])
+        return diagram_parent_id
 
     @staticmethod
     def _typed_feature_node_id(part_usage_id: str, feature_id: str) -> str:

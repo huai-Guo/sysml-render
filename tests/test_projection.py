@@ -100,6 +100,49 @@ class ProjectionEngineTests(unittest.TestCase):
             node.context_semantic_id,
         )
 
+    def test_structure_projection_resolves_multi_hop_feature_chain(self):
+        snapshot = json.loads(json.dumps(self.snapshot))
+        snapshot["relationships"].append(
+            {
+                "id": "conn:Vehicle.deepPower",
+                "name": "deepPower",
+                "kind": "ConnectionUsage",
+                "ownerId": "partdef:Vehicle",
+                "sourcePath": [
+                    "electrical",
+                    "battery",
+                    "powerOut",
+                ],
+                "targetPath": [
+                    "electrical",
+                    "controller",
+                    "powerIn",
+                ],
+            }
+        )
+
+        ir = ProjectionEngine(snapshot).project(
+            "partdef:Vehicle",
+            "structure",
+        )
+
+        edges = {edge.id: edge for edge in ir.edges}
+        self.assertIn("conn:Vehicle.deepPower", edges)
+
+        edge = edges["conn:Vehicle.deepPower"]
+        self.assertIn("part:ElectricalSystem.battery", edge.source)
+        self.assertIn("port:Battery.powerOut", edge.source)
+        self.assertIn("part:ElectricalSystem.controller", edge.target)
+        self.assertIn("port:Controller.powerIn", edge.target)
+
+        projected = {
+            node.id: node
+            for node in ir.nodes
+            if node.derived
+        }
+        self.assertIn(edge.source, projected)
+        self.assertIn(edge.target, projected)
+
     def test_renderer_does_not_invent_edges(self):
         snapshot = json.loads(json.dumps(self.snapshot))
         snapshot["relationships"] = []

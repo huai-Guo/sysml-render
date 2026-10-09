@@ -136,7 +136,9 @@ class SysONSemanticWriter:
                             "@type": "DataIdentity",
                         },
                         "payload": {
-                            "@id": element_id,
+                            # A new DataVersion needs a distinct version identity;
+                            # elementId stays stable across versions.
+                            "@id": str(uuid.uuid4()),
                             "@type": element_type,
                             "elementId": element_id,
                             "declaredName": new_name,

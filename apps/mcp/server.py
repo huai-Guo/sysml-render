@@ -19,6 +19,12 @@ for path in (ROOT, PROTOTYPE, SCRIPTS):
 from adapters.syson.importer import SysONImporter
 from adapters.syson.rest_adapter import SysONRestAdapter, SysONRestConfig
 from adapters.syson.semantic_writer import SysONSemanticWriter
+from adapters.syson.textual_writer import SysONTextualWriter
+from connection_editing import (
+    compile_canvas_connection,
+    connection_in_semantic_snapshot,
+    connection_visible,
+)
 from graph_ir import DiagramEdge, DiagramIR, DiagramNode
 from layout import EdgeRoute, LayoutResult, NodeLayout
 from render_projection_html import render_html
@@ -95,6 +101,19 @@ class SemanticWriteToolResult(BaseModel):
     element_id: str | None = None
     membership_id: str | None = None
     verified: bool
+
+class SemanticConnectionToolResult(BaseModel):
+    project_id: str
+    root_semantic_id: str
+    textual_content: str
+    acknowledged: bool
+    observed_in_model: bool
+    edge_visible: bool
+    verified: bool
+    messages: list[str]
+
+
+
 
 
 
@@ -347,6 +366,54 @@ def apply_layout_command(
         x=node["x"],
         y=node["y"],
         pinned=node["pinned"],
+    )
+
+
+@mcp.tool()
+def create_connection(
+    project_id: str,
+    root_semantic_id: str,
+    source_node_id: str,
+    target_node_id: str,
+    name: str,
+) -> SemanticConnectionToolResult:
+    """Create a real ConnectionUsage from two visible PortUsage nodes.
+
+    Does not invent semantic edges and does not silently retry mutations.
+    Writes are experimental and disabled by default.
+    """
+    _require_semantic_writes()
+    snapshot = _adapter(project_id).snapshot()
+    plan = compile_canvas_connection(
+        snapshot, root_semantic_id, source_node_id, target_node_id, name
+    )
+    editing_context_id = SysONImporter(
+        _syson_url(), token=_syson_token()
+    ).fetch_editing_context_id(project_id)
+    insertion = SysONTextualWriter(
+        _syson_url(), token=_syson_token()
+    ).insert(
+        editing_context_id=editing_context_id,
+        owner_element_id=plan.parent_id,
+        textual_content=plan.textual_content,
+    )
+    try:
+        refreshed = _adapter(project_id).snapshot()
+        observed = connection_in_semantic_snapshot(refreshed, plan)
+        visible = connection_visible(refreshed, plan)
+    except Exception:
+        # A successful upstream mutation must not be retried automatically
+        # when post-write consistency checks fail.
+        observed, visible = False, False
+    return SemanticConnectionToolResult(
+        project_id=project_id,
+        root_semantic_id=root_semantic_id,
+        textual_content=plan.textual_content,
+        acknowledged=insertion.acknowledged,
+        observed_in_model=observed,
+        edge_visible=visible,
+        verified=observed and visible,
+        messages=list(insertion.messages),
     )
 
 

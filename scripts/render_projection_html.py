@@ -173,6 +173,19 @@ canvas.appendChild(svg);
 
 function selectNode(node) {{
   selection.textContent = JSON.stringify(node, null, 2);
+  if (window.parent !== window) {{
+    window.parent.postMessage({{
+      type: "sysml-render:select-node",
+      node: {{
+        id: node.id,
+        semanticId: node.semantic_id,
+        label: node.label,
+        kind: node.kind,
+        parentId: node.parent_id,
+        derived: node.derived
+      }}
+    }}, "*");
+  }}
 }}
 
 function createNode(node) {{
@@ -182,7 +195,10 @@ function createNode(node) {{
 
   if (node.id === data.graph.rootSemanticId) {{
     el.className = "root";
-    el.innerHTML = '<div class="root-title">' + node.label + '</div>';
+    const title = document.createElement("div");
+    title.className = "root-title";
+    title.textContent = node.label;
+    el.appendChild(title);
   }} else if (node.derived) {{
     el.className = "port";
     el.dataset.label = node.label;
@@ -193,9 +209,13 @@ function createNode(node) {{
       ? "node container-node"
       : "node part";
     el.style.zIndex = String(2 + depthOf(node));
-    el.innerHTML =
-      '<div class="node-kind">' + node.kind + '</div>' +
-      '<div class="node-label">' + node.label + '</div>';
+    const kind = document.createElement("div");
+    kind.className = "node-kind";
+    kind.textContent = node.kind;
+    const label = document.createElement("div");
+    label.className = "node-label";
+    label.textContent = node.label;
+    el.append(kind, label);
   }}
 
   Object.assign(el.style, {{

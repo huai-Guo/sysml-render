@@ -39,6 +39,27 @@ class InsertSysMLCommand:
     kind: Literal["insert_sysml"] = "insert_sysml"
 
 
+@dataclass(frozen=True)
+class RenameElementCommand:
+    element_id: str
+    new_name: str
+    kind: Literal["rename_element"] = "rename_element"
+
+
+@dataclass(frozen=True)
+class DeleteElementCommand:
+    element_id: str
+    kind: Literal["delete_element"] = "delete_element"
+
+
+@dataclass(frozen=True)
+class CreateOwnedElementCommand:
+    owner_id: str
+    element_type: str
+    name: str
+    kind: Literal["create_owned_element"] = "create_owned_element"
+
+
 class SemanticCommandCompiler:
     """Compile renderer-owned semantic commands to textual SysML mutations."""
 

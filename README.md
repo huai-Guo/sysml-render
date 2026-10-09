@@ -249,3 +249,95 @@ The following script **always creates a fresh project** and never accepts an exi
 The script prints the new project ID and intentionally leaves the test project available for inspection or manual cleanup. It can modify/delete test elements *inside that new project* only.
 
 Unlike the default CI tests, this requires a real running SysON server. CI success by itself must not be taken as proof that real SysON writes or graphical round-tripping work.
+
+
+## Automatic semantic connection editing (Web and MCP)
+
+The structure view can now turn **two existing visible PortUsage nodes**
+into a SysML `ConnectionUsage`. This is an explicit semantic edit, not a
+layout-only line.
+
+With `SYSON_ENABLE_SEMANTIC_WRITES=1` set **only for a disposable SysON
+project**:
+
+1. Import or open the project's **Structure** view rooted at its PartDefinition.
+2. Click the first port, then **设为源 Port**.
+3. Click the second port, then **设为目标 Port**.
+4. Enter a safe connection name (simple SysML identifier).
+5. Click **创建语义连接**.
+
+For example, choosing `battery.powerOut` and `motor.powerIn` under
+`ElectricalSystem` generates:
+
+```sysml
+connection batteryToMotor connect battery.powerOut to motor.powerIn;
+```
+
+The UI validates both ports against the current semantic feature chains,
+rejects duplicate diagram edges and duplicate relationship names, then uses
+the SysON `insertTextualSysMLv2` GraphQL mutation on the existing
+semantic parent. Unlike `uploadDocument`, this inserts text in the
+chosen owner instead of importing another document.
+
+A post-write check distinguishes:
+
+- `acknowledged`: SysON GraphQL reported `SuccessPayload`;
+- `observedInModel`: semantic REST reread found the newly named ConnectionUsage;
+- `edgeVisible`: a new projected edge links the selected visual endpoints;
+- `verified`: both semantic observation and edge visualization succeeded.
+
+If GraphQL acknowledges a write but verification fails, **inspect the
+model rather than clicking Create again**. The project may have been
+modified, while the semantic adapter could not yet map the connection
+endpoints back to a view.
+
+The same operation is exposed to MCP Agents through `create_connection`:
+
+```text
+create_connection(
+    project_id,
+    root_semantic_id,
+    source_node_id,
+    target_node_id,
+    name
+)
+```
+
+All semantic writer tools, whether Web or MCP, are disabled by default
+until `SYSON_ENABLE_SEMANTIC_WRITES=1` is set. Position/layout commands
+remain separate.
+
+### Live SysON connection smoke
+
+The following command **always creates a new disposable project** from
+`examples/nested-system/vehicle-model.sysml` and attempts a new
+`battery.powerOut -> motor.powerIn` connection.
+
+```powershell
+py scripts/syson_connection_smoke.py `
+  --url http://localhost:8080 `
+  --allow-writes
+```
+
+It checks: textual import → normalized semantic elements and typed
+ports → connection command → GraphQL insertion → REST reread →
+automatically projected edge. The test project is left in SysON so it
+can be inspected and manually removed.
+
+**This live smoke is not run in GitHub Actions.** CI uses isolated
+contract fixtures and mock HTTP responses; it does not prove that the
+exact installed SysON server supports every mutation or that all
+relationship endpoint references normalize correctly.
+
+### Conservative deletion audit
+
+Deletion now shares a fail-closed reference audit between Web and MCP.
+It checks normalized child ownership, typing, relationship references,
+and also queries SysON's direct `GET elements/{id}/relationships`
+endpoint. If that query fails or returns relationships that have not
+been safely classified for cascade deletion, the operation is refused.
+
+This deliberately favors preserving model integrity over permitting
+deletions. It does not yet constitute a complete SysML v2 reference
+dependency engine: inherited, implied, and backend-specific references
+still need a live metamodel-level audit.

@@ -122,6 +122,8 @@ class SysONSemanticWriterTests(unittest.TestCase):
         self.assertEqual("part-1", change["identity"]["@id"])
         self.assertEqual("PartDefinition", change["payload"]["@type"])
         self.assertEqual("BackupBattery", change["payload"]["declaredName"])
+        self.assertNotEqual("part-1", change["payload"]["@id"])
+        self.assertEqual("part-1", change["payload"]["elementId"])
         self.assertNotIn("previousCommit", body)
 
     def test_delete_omits_payload_and_verifies_404(self):

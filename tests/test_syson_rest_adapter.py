@@ -176,6 +176,35 @@ class SysONRestAdapterTests(unittest.TestCase):
             relationships["conn"]["targetId"],
         )
 
+    def test_owning_membership_projects_child_into_package(self):
+        raw = [
+            {
+                "@id": "root",
+                "@type": "Package",
+                "name": "Root",
+                "ownedRelationship": [{"@id": "membership"}],
+            },
+            {
+                "@id": "membership",
+                "@type": "OwningMembership",
+                "owner": {"@id": "root"},
+                "ownedRelatedElement": [{"@id": "sensor"}],
+            },
+            {
+                "@id": "sensor",
+                "@type": "PartDefinition",
+                "name": "Sensor",
+                "owner": {"@id": "membership"},
+            },
+        ]
+        snapshot = self.make_adapter().normalize_elements(raw)
+        sensor = next(e for e in snapshot["elements"] if e["id"] == "sensor")
+        self.assertEqual("root", sensor["parentId"])
+        self.assertNotIn(
+            "membership",
+            {e["id"] for e in snapshot["elements"]},
+        )
+
     def test_filters_internal_metamodel_relationships(self):
         snapshot = self.make_adapter().normalize_elements(RAW_ELEMENTS)
         ids = {element["id"] for element in snapshot["elements"]}

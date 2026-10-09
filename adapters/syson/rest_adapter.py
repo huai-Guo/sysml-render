@@ -204,7 +204,10 @@ class SysONRestAdapter:
             "source": {
                 "kind": "syson-rest",
                 "projectId": self.config.project_id,
-                "commitId": self._commit_id(),
+                "commitId": (
+                    self._resolved_commit_id
+                    or self.config.effective_commit_id
+                ),
             },
             "elements": normalized_elements,
             "relationships": normalized_relationships,

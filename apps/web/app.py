@@ -4,6 +4,8 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+import re
+from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -20,6 +22,8 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from adapters.syson.importer import SysONImportError, SysONImporter
+from adapters.syson.semantic_writer import SysONSemanticWriter, SysONSemanticWriterError
+from prototype.semantic_commands import (RenameElementCommand, DeleteElementCommand, CreateOwnedElementCommand)
 from adapters.syson.rest_adapter import SysONAdapterError, SysONRestAdapter, SysONRestConfig
 from render_projection_html import render_html
 from render_service import RenderService
@@ -53,6 +57,194 @@ class LayoutUpdate(BaseModel):
     node_id: str
     x: float
     y: float
+
+
+class ProjectRenderRequest(BaseModel):
+    select: str | None = None
+    profile: str | None = None
+
+
+class SemanticEditRequest(BaseModel):
+    kind: Literal["rename_element", "create_owned_element", "delete_element"]
+    element_id: str | None = None
+    owner_id: str | None = None
+    new_name: str | None = None
+    element_type: str | None = None
+    confirmed: bool = False
+
+
+CREATABLE_TYPES = frozenset({
+    "PartDefinition", "PortDefinition", "ItemDefinition",
+    "RequirementDefinition", "Package",
+})
+DELETABLE_TYPES = frozenset({
+    "PartDefinition", "PortDefinition", "ItemDefinition",
+    "RequirementDefinition",
+})
+_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def semantic_writes_enabled() -> bool:
+    return os.environ.get("SYSON_ENABLE_SEMANTIC_WRITES") == "1"
+
+
+def _semantic_snapshot(project_id: str) -> dict:
+    return SysONRestAdapter(
+        SysONRestConfig(
+            base_url=syson_url(),
+            project_id=project_id,
+            token=syson_token(),
+        )
+    ).snapshot()
+
+
+def _render_existing(
+    project_id: str,
+    *,
+    select: str | None = None,
+    profile: str | None = None,
+    editing_context_id: str | None = None,
+    document_id: str | None = None,
+    diagnostics: object = None,
+) -> dict:
+    snapshot = _semantic_snapshot(project_id)
+    selection = SemanticSelector(snapshot).resolve(select, profile=profile)
+    identity = ViewIdentity(
+        project_id=project_id,
+        root_semantic_id=selection.element_id,
+        profile=selection.profile,
+    )
+    result = RenderService().render(
+        snapshot,
+        select=selection.element_id,
+        profile=selection.profile,
+        layout_overrides=view_state_store().load(identity.id),
+    )
+    return {
+        "projectId": project_id,
+        "editingContextId": editing_context_id,
+        "documentId": document_id,
+        "viewId": identity.id,
+        "rootSemanticId": result.root_semantic_id,
+        "profile": result.profile,
+        "modelCommitId": snapshot.get("source", {}).get("commitId"),
+        "graph": result.graph,
+        "layout": result.layout,
+        "previewHtml": render_html(rebuild_ir(result.graph), rebuild_layout(result.layout)),
+        "diagnostics": diagnostics,
+    }
+
+
+def _validate_name(name: str | None) -> str:
+    candidate = (name or "").strip()
+    if not _NAME.fullmatch(candidate):
+        raise HTTPException(
+            422, "Name must be a simple SysML identifier (letters, digits, underscores)."
+        )
+    return candidate
+
+
+def _require_element(elements: dict, element_id: str | None) -> dict:
+    element = elements.get(element_id)
+    if element is None:
+        raise HTTPException(404, f"Semantic element not found: {element_id}")
+    return element
+
+
+@app.get("/api/capabilities")
+def capabilities():
+    return {
+        "semanticWritesEnabled": semantic_writes_enabled(),
+        "allowedCreateTypes": sorted(CREATABLE_TYPES),
+        "semanticWritesExperimental": True,
+    }
+
+
+@app.post("/api/projects/{project_id}/render")
+def render_existing_project(project_id: str, request: ProjectRenderRequest):
+    try:
+        return _render_existing(
+            project_id,
+            select=request.select,
+            profile=request.profile,
+        )
+    except (SysONAdapterError, SelectionError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/semantic-commands")
+def apply_semantic_command(project_id: str, request: SemanticEditRequest):
+    if not semantic_writes_enabled():
+        raise HTTPException(
+            403,
+            "Semantic writes are experimental and disabled. "
+            "Set SYSON_ENABLE_SEMANTIC_WRITES=1 only against a disposable SysON project.",
+        )
+
+    snapshot = _semantic_snapshot(project_id)
+    elements = {item["id"]: item for item in snapshot.get("elements", [])}
+    if request.kind == "rename_element":
+        item = _require_element(elements, request.element_id)
+        name = _validate_name(request.new_name)
+        if item["name"] == name:
+            raise HTTPException(422, "New name is identical to the current name.")
+        command = RenameElementCommand(element_id=item["id"], new_name=name)
+    elif request.kind == "create_owned_element":
+        owner = _require_element(elements, request.owner_id)
+        if owner["kind"] not in {"Package", "PartDefinition", "LibraryPackage"}:
+            raise HTTPException(422, "Choose a Package or PartDefinition owner.")
+        if request.element_type not in CREATABLE_TYPES:
+            raise HTTPException(422, "Unsupported element type.")
+        name = _validate_name(request.new_name)
+        if any(
+            child.get("parentId") == owner["id"] and child["name"] == name
+            for child in elements.values()
+        ):
+            raise HTTPException(409, "An element with that name already exists here.")
+        command = CreateOwnedElementCommand(
+            owner_id=owner["id"], element_type=request.element_type, name=name
+        )
+    else:
+        item = _require_element(elements, request.element_id)
+        if not request.confirmed:
+            raise HTTPException(409, "Deletion requires explicit confirmation.")
+        if item["kind"] not in DELETABLE_TYPES:
+            raise HTTPException(422, "Only unreferenced leaf definitions may be deleted.")
+        if any(child.get("parentId") == item["id"] for child in elements.values()):
+            raise HTTPException(409, "Cannot delete an element that owns children.")
+        if any(
+            ref.get("typeRef") == item["id"]
+            for ref in elements.values()
+        ):
+            raise HTTPException(409, "Cannot delete a type referenced by usages.")
+        if any(
+            item["id"] in (
+                relationship.get("sourceId"),
+                relationship.get("targetId"),
+                relationship.get("ownerId"),
+                *relationship.get("relatedFeatureIds", []),
+            )
+            for relationship in snapshot.get("relationships", [])
+        ):
+            raise HTTPException(409, "Cannot delete an element involved in relationships.")
+        command = DeleteElementCommand(element_id=item["id"])
+
+    try:
+        result = SysONSemanticWriter(
+            syson_url(), project_id, token=syson_token()
+        ).apply(command)
+    except (SysONSemanticWriterError, ValueError) as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    return {
+        "projectId": project_id,
+        "kind": result.command,
+        "elementId": result.element_id,
+        "membershipId": result.membership_id,
+        "commitId": result.commit_id,
+        "verified": result.verified,
+        "refreshRequired": True,
+    }
 
 
 def rebuild_ir(graph: dict) -> DiagramIR:
@@ -173,30 +365,15 @@ def render_sysml(
             project_name=project_name,
         )
 
-        adapter = SysONRestAdapter(
-            SysONRestConfig(
-                base_url=syson_url(),
-                project_id=imported.project_id,
-                token=syson_token(),
+        return JSONResponse(
+            _render_existing(
+                imported.project_id,
+                select=select or None,
+                profile=profile or None,
+                editing_context_id=imported.editing_context_id,
+                document_id=imported.document_id,
+                diagnostics=imported.import_report,
             )
-        )
-        snapshot = adapter.snapshot()
-        selection = SemanticSelector(snapshot).resolve(
-            select or None,
-            profile=profile or None,
-        )
-        identity = ViewIdentity(
-            project_id=imported.project_id,
-            root_semantic_id=selection.element_id,
-            profile=selection.profile,
-        )
-        overrides = view_state_store().load(identity.id)
-
-        result = RenderService().render(
-            snapshot,
-            select=selection.element_id,
-            profile=selection.profile,
-            layout_overrides=overrides,
         )
     except (
         SysONImportError,
@@ -205,25 +382,6 @@ def render_sysml(
         ValueError,
     ) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    ir = rebuild_ir(result.graph)
-    layout = rebuild_layout(result.layout)
-    preview_html = render_html(ir, layout)
-
-    return JSONResponse(
-        {
-            "projectId": imported.project_id,
-            "editingContextId": imported.editing_context_id,
-            "documentId": imported.document_id,
-            "viewId": identity.id,
-            "rootSemanticId": result.root_semantic_id,
-            "profile": result.profile,
-            "graph": result.graph,
-            "layout": result.layout,
-            "previewHtml": preview_html,
-            "diagnostics": imported.import_report,
-        }
-    )
 
 
 @app.post("/api/views/{view_id}/layout")

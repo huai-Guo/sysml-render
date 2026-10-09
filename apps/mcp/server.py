@@ -18,12 +18,18 @@ for path in (ROOT, PROTOTYPE, SCRIPTS):
 
 from adapters.syson.importer import SysONImporter
 from adapters.syson.rest_adapter import SysONRestAdapter, SysONRestConfig
+from adapters.syson.semantic_writer import SysONSemanticWriter
 from graph_ir import DiagramEdge, DiagramIR, DiagramNode
 from layout import EdgeRoute, LayoutResult, NodeLayout
 from render_projection_html import render_html
 from render_service import RenderService
 from selection import SemanticSelector
 from view_state import FileViewStateStore, ViewIdentity
+from semantic_commands import (
+    CreateOwnedElementCommand,
+    DeleteElementCommand,
+    RenameElementCommand,
+)
 
 
 ProjectionProfileName = Literal[
@@ -81,6 +87,15 @@ class LayoutCommandResult(BaseModel):
     pinned: bool = True
 
 
+class SemanticWriteToolResult(BaseModel):
+    project_id: str
+    command: str
+    commit_id: str
+    element_id: str | None = None
+    membership_id: str | None = None
+    verified: bool
+
+
 
 
 mcp = MCPServer(
@@ -104,6 +119,14 @@ def _adapter(project_id: str) -> SysONRestAdapter:
             project_id=project_id,
             token=_syson_token(),
         )
+    )
+
+
+def _semantic_writer(project_id: str) -> SysONSemanticWriter:
+    return SysONSemanticWriter(
+        _syson_url(),
+        project_id,
+        token=_syson_token(),
     )
 
 
@@ -315,6 +338,73 @@ def apply_layout_command(
         x=node["x"],
         y=node["y"],
         pinned=node["pinned"],
+    )
+
+
+@mcp.tool()
+def rename_element(
+    project_id: str,
+    element_id: str,
+    new_name: str,
+) -> SemanticWriteToolResult:
+    """Rename one SysML semantic element through the SysML v2 commit API."""
+    result = _semantic_writer(project_id).apply(
+        RenameElementCommand(
+            element_id=element_id,
+            new_name=new_name,
+        )
+    )
+    return SemanticWriteToolResult(
+        project_id=result.project_id,
+        command=result.command,
+        commit_id=result.commit_id,
+        element_id=result.element_id,
+        membership_id=result.membership_id,
+        verified=result.verified,
+    )
+
+
+@mcp.tool()
+def create_owned_element(
+    project_id: str,
+    owner_id: str,
+    element_type: str,
+    name: str,
+) -> SemanticWriteToolResult:
+    """Create a SysML semantic element owned by another semantic element."""
+    result = _semantic_writer(project_id).apply(
+        CreateOwnedElementCommand(
+            owner_id=owner_id,
+            element_type=element_type,
+            name=name,
+        )
+    )
+    return SemanticWriteToolResult(
+        project_id=result.project_id,
+        command=result.command,
+        commit_id=result.commit_id,
+        element_id=result.element_id,
+        membership_id=result.membership_id,
+        verified=result.verified,
+    )
+
+
+@mcp.tool()
+def delete_element(
+    project_id: str,
+    element_id: str,
+) -> SemanticWriteToolResult:
+    """Delete one SysML semantic element through the SysML v2 commit API."""
+    result = _semantic_writer(project_id).apply(
+        DeleteElementCommand(element_id=element_id)
+    )
+    return SemanticWriteToolResult(
+        project_id=result.project_id,
+        command=result.command,
+        commit_id=result.commit_id,
+        element_id=result.element_id,
+        membership_id=result.membership_id,
+        verified=result.verified,
     )
 
 

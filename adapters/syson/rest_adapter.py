@@ -280,15 +280,49 @@ class SysONRestAdapter:
         self,
         raw: list[dict[str, Any]],
     ) -> dict[str, str]:
+        """Reconstruct ownership through SysML's Membership indirection.
+
+        Package --ownedRelationship--> OwningMembership
+                --ownedRelatedElement--> PartDefinition
+
+        A direct ownedElement/owner edge is also supported where the server
+        exposes those derived references.
+        """
         result: dict[str, str] = {}
+        members = {item["@id"]: item for item in raw
+                   if isinstance(item.get("@id"), str)}
+        membership_owner: dict[str, str] = {}
         for parent in raw:
             parent_id = ref_id(parent)
             if not parent_id:
                 continue
-            for child in parent.get("ownedElement", []):
-                child_id = ref_id(child)
-                if child_id:
-                    result.setdefault(child_id, parent_id)
+            for key in ("ownedElement", "ownedRelationship"):
+                for value in parent.get(key, []) or []:
+                    child_id = ref_id(value)
+                    if not child_id:
+                        continue
+                    child = members.get(child_id, {})
+                    if child.get("@type") in {"OwningMembership", "FeatureMembership"}:
+                        membership_owner[child_id] = parent_id
+                    elif key == "ownedElement":
+                        result.setdefault(child_id, parent_id)
+
+        for membership_id, membership in members.items():
+            if membership.get("@type") not in {"OwningMembership", "FeatureMembership"}:
+                continue
+            owner = (
+                membership_owner.get(membership_id)
+                or first_ref(membership.get("owner"))
+                or first_ref(membership.get("owningNamespace"))
+                or first_ref(membership.get("membershipOwningNamespace"))
+            )
+            if not owner:
+                continue
+            for key in ("ownedRelatedElement", "memberElement"):
+                for value in membership.get(key, []) or []:
+                    target_id = ref_id(value)
+                    if target_id:
+                        result[target_id] = owner
         return result
 
     @staticmethod

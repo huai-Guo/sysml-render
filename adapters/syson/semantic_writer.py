@@ -62,6 +62,9 @@ class SysONSemanticWriter:
         raise TypeError(f"unsupported semantic command: {type(command)!r}")
 
     def head_commit_id(self) -> str:
+        # SysON currently exposes a single effective commit per project and
+        # may return the project ID after every write. Do not infer a version
+        # counter from POST /commits.
         response = self.session.get(
             self._commits_url(),
             headers=self._headers(),
@@ -140,7 +143,6 @@ class SysONSemanticWriter:
                         },
                     }
                 ],
-                "previousCommit": {"@id": head},
             }
         )
 
@@ -183,7 +185,6 @@ class SysONSemanticWriter:
                         },
                     }
                 ],
-                "previousCommit": {"@id": head},
             }
         )
 
@@ -218,7 +219,7 @@ class SysONSemanticWriter:
             )
 
         membership_id = str(uuid.uuid4())
-        membership_commit = self._post_commit(
+        self._post_commit(
             {
                 "@type": "Commit",
                 "change": [
@@ -244,7 +245,6 @@ class SysONSemanticWriter:
                         },
                     },
                 ],
-                "previousCommit": {"@id": head},
             }
         )
 
@@ -276,7 +276,6 @@ class SysONSemanticWriter:
                         },
                     },
                 ],
-                "previousCommit": {"@id": membership_commit},
             }
         )
 

@@ -28,6 +28,7 @@ from connection_editing import (
     ConnectionValidationError, compile_canvas_connection,
     connection_visible, connection_in_semantic_snapshot,
 )
+from reference_integrity import audit_delete
 from prototype.semantic_commands import (RenameElementCommand, DeleteElementCommand, CreateOwnedElementCommand)
 from adapters.syson.rest_adapter import SysONAdapterError, SysONRestAdapter, SysONRestConfig
 from render_projection_html import render_html
@@ -104,6 +105,16 @@ def _semantic_snapshot(project_id: str) -> dict:
             token=syson_token(),
         )
     ).snapshot()
+
+
+def _server_relationships(project_id: str, element_id: str) -> list[dict]:
+    return SysONRestAdapter(
+        SysONRestConfig(
+            base_url=syson_url(),
+            project_id=project_id,
+            token=syson_token(),
+        )
+    ).fetch_relationships(element_id)
 
 
 def _render_existing(
@@ -267,25 +278,17 @@ def apply_semantic_command(project_id: str, request: SemanticEditRequest):
         item = _require_element(elements, request.element_id)
         if not request.confirmed:
             raise HTTPException(409, "Deletion requires explicit confirmation.")
-        if item["kind"] not in DELETABLE_TYPES:
-            raise HTTPException(422, "Only unreferenced leaf definitions may be deleted.")
-        if any(child.get("parentId") == item["id"] for child in elements.values()):
-            raise HTTPException(409, "Cannot delete an element that owns children.")
-        if any(
-            ref.get("typeRef") == item["id"]
-            for ref in elements.values()
-        ):
-            raise HTTPException(409, "Cannot delete a type referenced by usages.")
-        if any(
-            item["id"] in (
-                relationship.get("sourceId"),
-                relationship.get("targetId"),
-                relationship.get("ownerId"),
-                *relationship.get("relatedFeatureIds", []),
-            )
-            for relationship in snapshot.get("relationships", [])
-        ):
-            raise HTTPException(409, "Cannot delete an element involved in relationships.")
+        try:
+            related = _server_relationships(project_id, item["id"])
+        except (SysONAdapterError, ValueError):
+            related = None  # Fail closed if the backend cannot supply evidence.
+        audit = audit_delete(
+            snapshot,
+            item["id"],
+            server_relationships=related,
+        )
+        if not audit.safe:
+            raise HTTPException(409, "Deletion blocked: " + "; ".join(audit.reasons))
         command = DeleteElementCommand(element_id=item["id"])
 
     try:

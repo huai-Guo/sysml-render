@@ -125,6 +125,8 @@ class FakeSession:
 
     def get(self, url, headers=None, timeout=None):
         self.calls.append((url, headers, timeout))
+        if url.endswith("/commits"):
+            return FakeResponse(200, [{"@id": "commit-9"}])
         return FakeResponse(200, self.payload)
 
 
@@ -143,11 +145,15 @@ class SysONRestAdapterTests(unittest.TestCase):
         snapshot = self.make_adapter(session).snapshot()
 
         self.assertEqual("project-1", snapshot["modelId"])
-        self.assertEqual(1, len(session.calls))
+        self.assertEqual(2, len(session.calls))
+        self.assertEqual(
+            "http://localhost:8080/api/rest/projects/project-1/commits",
+            session.calls[0][0],
+        )
         self.assertEqual(
             "http://localhost:8080/api/rest/projects/project-1/"
-            "commits/project-1/elements",
-            session.calls[0][0],
+            "commits/commit-9/elements",
+            session.calls[1][0],
         )
 
     def test_normalizes_owner_type_and_connection_endpoints(self):

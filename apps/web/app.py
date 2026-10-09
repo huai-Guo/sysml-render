@@ -635,6 +635,17 @@ INDEX_HTML = r"""<!doctype html>
         <button type="button" id="create-element" class="secondary">创建子元素</button>
         <button type="button" id="delete-element" class="danger">删除选中元素（需确认）</button>
       </fieldset>
+      <fieldset id="connection-actions" disabled>
+        <label>创建语义 Connection（仅结构图 Port）</label>
+        <p id="connection-pair" class="summary">先点击 Port，再设置源端口与目标端口。</p>
+        <div class="row">
+          <button type="button" class="secondary" id="set-source-port">设为源 Port</button>
+          <button type="button" class="secondary" id="set-target-port">设为目标 Port</button>
+        </div>
+        <label for="connection-name">Connection 名称</label>
+        <input id="connection-name" placeholder="例如 batteryToMotor">
+        <button type="button" id="create-connection" disabled>创建语义连接</button>
+      </fieldset>
     </section>
   </aside>
   <section class="viewer">
@@ -649,6 +660,28 @@ const preview = document.getElementById("preview");
 let currentRender = null;
 let selectedNode = null;
 let writesEnabled = false;
+let sourcePort = null;
+let targetPort = null;
+const connectionActions = document.getElementById("connection-actions");
+const sourceButton = document.getElementById("set-source-port");
+const targetButton = document.getElementById("set-target-port");
+const connectButton = document.getElementById("create-connection");
+const connectionPair = document.getElementById("connection-pair");
+const connectionName = document.getElementById("connection-name");
+
+function updateConnectionControls() {
+  const isPort = writesEnabled && currentRender?.profile === "structure" &&
+    selectedNode?.kind === "PortUsage";
+  connectionActions.disabled = !writesEnabled || currentRender?.profile !== "structure";
+  sourceButton.disabled = !isPort;
+  targetButton.disabled = !isPort;
+  connectButton.disabled = !sourcePort || !targetPort || !writesEnabled ||
+    sourcePort.id === targetPort.id;
+  connectionPair.textContent =
+    "源：" + (sourcePort?.label || "未选") +
+    "  →  目标：" + (targetPort?.label || "未选");
+}
+
 const actions = document.getElementById("semantic-actions");
 const selectedLabel = document.getElementById("selected-element");
 const modeLabel = document.getElementById("editor-mode");
@@ -669,7 +702,10 @@ async function requestJSON(url, body) {
 function setRender(payload) {
   currentRender = payload;
   selectedNode = null;
+  sourcePort = null;
+  targetPort = null;
   preview.srcdoc = payload.previewHtml;
+  updateConnectionControls();
   actions.disabled = true;
   selectedLabel.textContent = "点击图中的节点选择元素。";
   refreshButton.disabled = false;
@@ -712,6 +748,7 @@ async function loadCapabilities() {
     const response = await fetch("/api/capabilities");
     const capabilities = await response.json();
     writesEnabled = capabilities.semanticWritesEnabled === true;
+    updateConnectionControls();
     modeLabel.textContent = writesEnabled
       ? "实验模式已开启。请仅在可丢弃的 SysON 测试项目中进行写操作。"
       : "语义写入默认关闭；只读图和布局编辑仍可使用。";
@@ -729,6 +766,51 @@ refreshButton.addEventListener("click", async () => {
   refreshButton.disabled = true;
   try { await refreshProject(); } catch (error) { showError(error); }
   finally { refreshButton.disabled = false; }
+});
+
+sourceButton.addEventListener("click", () => {
+  if (selectedNode?.kind !== "PortUsage") return;
+  sourcePort = {...selectedNode};
+  updateConnectionControls();
+});
+targetButton.addEventListener("click", () => {
+  if (selectedNode?.kind !== "PortUsage") return;
+  targetPort = {...selectedNode};
+  updateConnectionControls();
+});
+connectButton.addEventListener("click", async () => {
+  if (!currentRender || !sourcePort || !targetPort || !writesEnabled) return;
+  connectButton.disabled = true;
+  const projectId = currentRender.projectId;
+  status.textContent = "正在提交语义 Connection…";
+  try {
+    const result = await requestJSON(
+      "/api/projects/" + encodeURIComponent(projectId) + "/semantic-commands",
+      {
+        kind: "create_connection",
+        root_element_id: currentRender.rootSemanticId,
+        source_node_id: sourcePort.id,
+        target_node_id: targetPort.id,
+        new_name: connectionName.value
+      }
+    );
+    if (!result.acknowledged) {
+      status.textContent = "SysON 未确认插入。";
+      return;
+    }
+    try {
+      await refreshProject();
+      status.textContent = result.verified
+        ? "连接已写入 SysML 并在图上显示。"
+        : "SysON 已确认插入，但新连接尚未同时通过语义读取和图形校验；请检查模型，不要直接重试。";
+    } catch (error) {
+      status.textContent = "SysON 已确认插入，但图形刷新失败：" + error.message;
+    }
+  } catch (error) {
+    showError(error);
+  } finally {
+    updateConnectionControls();
+  }
 });
 
 document.getElementById("rename-element").addEventListener("click", async () => {
@@ -812,6 +894,7 @@ window.addEventListener("message", async (event) => {
       candidate.label + " · " + candidate.kind + "\n" + candidate.semantic_id +
       (candidate.derived ? "\n类型投影节点：不可直接语义编辑" : "");
     actions.disabled = !writesEnabled || Boolean(candidate.derived);
+    updateConnectionControls();
     return;
   }
 

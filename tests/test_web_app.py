@@ -44,6 +44,36 @@ class FakeAdapter:
         return json.loads(fixture.read_text(encoding="utf-8"))
 
 
+class FakeWriter:
+    calls = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def apply(self, command):
+        self.calls.append(command)
+        return SimpleNamespace(
+            project_id="project-web",
+            command=command.kind,
+            element_id=getattr(command, "element_id", "generated-element"),
+            membership_id=None,
+            commit_id="project-web",
+            verified=True,
+        )
+
+
+class FakeAdapterWithLeaf(FakeAdapter):
+    def snapshot(self):
+        data = super().snapshot()
+        data["elements"].append({
+            "id": "partdef:Orphan",
+            "name": "Orphan",
+            "kind": "PartDefinition",
+            "parentId": "pkg:Definitions",
+        })
+        return data
+
+
 class WebAppTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
@@ -148,6 +178,109 @@ class WebAppTests(unittest.TestCase):
 
                 self.assertEqual(saved_x, after["x"])
                 self.assertEqual(saved_y, after["y"])
+
+    @patch("apps.web.app.SysONRestAdapter", FakeAdapter)
+    def test_read_only_refresh_does_not_import_existing_model(self):
+        response = self.client.post(
+            "/api/projects/project-web/render",
+            json={"select": "ElectricalSystem", "profile": "structure"},
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("partdef:ElectricalSystem", response.json()["rootSemanticId"])
+        self.assertEqual(2, len(response.json()["graph"]["edges"]))
+
+    @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "0"})
+    def test_semantic_edit_disabled_by_default(self):
+        response = self.client.post(
+            "/api/projects/project-web/semantic-commands",
+            json={
+                "kind": "rename_element",
+                "element_id": "partdef:Battery",
+                "new_name": "BackupBattery",
+            },
+        )
+        self.assertEqual(403, response.status_code)
+
+    @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "1"})
+    @patch("apps.web.app.SysONSemanticWriter", FakeWriter)
+    @patch("apps.web.app.SysONRestAdapter", FakeAdapter)
+    def test_semantic_rename_routes_to_writer(self):
+        FakeWriter.calls.clear()
+        response = self.client.post(
+            "/api/projects/project-web/semantic-commands",
+            json={
+                "kind": "rename_element",
+                "element_id": "partdef:Battery",
+                "new_name": "BackupBattery",
+            },
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json()["verified"])
+        self.assertEqual("BackupBattery", FakeWriter.calls[-1].new_name)
+        self.assertTrue(response.json()["refreshRequired"])
+
+    @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "1"})
+    @patch("apps.web.app.SysONSemanticWriter", FakeWriter)
+    @patch("apps.web.app.SysONRestAdapter", FakeAdapter)
+    def test_semantic_create_rejects_duplicate_and_accepts_valid_child(self):
+        FakeWriter.calls.clear()
+        duplicate = self.client.post(
+            "/api/projects/project-web/semantic-commands",
+            json={
+                "kind": "create_owned_element",
+                "owner_id": "pkg:Definitions",
+                "element_type": "PartDefinition",
+                "new_name": "Battery",
+            },
+        )
+        self.assertEqual(409, duplicate.status_code)
+        valid = self.client.post(
+            "/api/projects/project-web/semantic-commands",
+            json={
+                "kind": "create_owned_element",
+                "owner_id": "pkg:Definitions",
+                "element_type": "PartDefinition",
+                "new_name": "NewSensor",
+            },
+        )
+        self.assertEqual(200, valid.status_code)
+        self.assertEqual("NewSensor", FakeWriter.calls[-1].name)
+
+    @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "1"})
+    @patch("apps.web.app.SysONSemanticWriter", FakeWriter)
+    @patch("apps.web.app.SysONRestAdapter", FakeAdapterWithLeaf)
+    def test_delete_requires_confirmation_and_rejects_referenced_definitions(self):
+        FakeWriter.calls.clear()
+        missing_confirmation = self.client.post(
+            "/api/projects/project-web/semantic-commands",
+            json={"kind": "delete_element", "element_id": "partdef:Orphan"},
+        )
+        self.assertEqual(409, missing_confirmation.status_code)
+        referenced = self.client.post(
+            "/api/projects/project-web/semantic-commands",
+            json={
+                "kind": "delete_element",
+                "element_id": "partdef:Battery",
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(409, referenced.status_code)
+        allowed = self.client.post(
+            "/api/projects/project-web/semantic-commands",
+            json={
+                "kind": "delete_element",
+                "element_id": "partdef:Orphan",
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(200, allowed.status_code)
+        self.assertEqual("partdef:Orphan", FakeWriter.calls[-1].element_id)
+
+    def test_web_exposes_selection_and_refresh_controls(self):
+        html = self.client.get("/").text
+        self.assertIn('id="semantic-actions"', html)
+        self.assertIn('id="refresh-project"', html)
+        self.assertIn('sandbox="allow-scripts"', html)
 
     @patch("apps.web.app.SysONRestAdapter", FakeAdapter)
     @patch("apps.web.app.SysONImporter", FakeImporter)

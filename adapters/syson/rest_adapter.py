@@ -342,7 +342,7 @@ class SysONRestAdapter:
 
     @staticmethod
     def _name(item: dict[str, Any], fallback: str) -> str:
-        for key in ("name", "declaredName", "qualifiedName"):
+        for key in ("declaredName", "name", "qualifiedName"):
             value = item.get(key)
             if isinstance(value, str) and value:
                 return value

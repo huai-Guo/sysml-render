@@ -355,7 +355,7 @@ class WebAppTests(unittest.TestCase):
     @patch("apps.web.app._server_relationships", return_value=[])
     @patch("apps.web.app.SysONSemanticWriter", FakeWriter)
     @patch("apps.web.app.SysONRestAdapter", FakeAdapterWithLeaf)
-    def test_delete_requires_confirmation_and_rejects_referenced_definitions(self):
+    def test_delete_requires_confirmation_and_rejects_referenced_definitions(self, mocked_relationships):
         FakeWriter.calls.clear()
         missing_confirmation = self.client.post(
             "/api/projects/project-web/semantic-commands",
@@ -386,7 +386,7 @@ class WebAppTests(unittest.TestCase):
     @patch("apps.web.app._server_relationships", return_value=[{"@id": "membership", "@type": "OwningMembership"}])
     @patch("apps.web.app.SysONSemanticWriter", FakeWriter)
     @patch("apps.web.app.SysONRestAdapter", FakeAdapterWithLeaf)
-    def test_delete_refuses_unknown_server_associations(self):
+    def test_delete_refuses_unknown_server_associations(self, mocked_relationships):
         FakeWriter.calls.clear()
         response = self.client.post(
             "/api/projects/project-web/semantic-commands",
@@ -400,7 +400,7 @@ class WebAppTests(unittest.TestCase):
     @patch("apps.web.app._server_relationships", side_effect=RuntimeError("backend down"))
     @patch("apps.web.app.SysONSemanticWriter", FakeWriter)
     @patch("apps.web.app.SysONRestAdapter", FakeAdapterWithLeaf)
-    def test_delete_fails_closed_if_reference_query_is_unavailable(self):
+    def test_delete_fails_closed_if_reference_query_is_unavailable(self, mocked_relationships):
         FakeWriter.calls.clear()
         response = self.client.post(
             "/api/projects/project-web/semantic-commands",

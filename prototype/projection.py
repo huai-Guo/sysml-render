@@ -240,8 +240,6 @@ class ProjectionEngine:
         root_id: str,
         profile: ProjectionProfile,
     ) -> None:
-        visible_node_ids = {node.id for node in ir.nodes}
-
         for relationship in self.index.relationships:
             if relationship["kind"] not in profile.edge_kinds:
                 continue
@@ -262,6 +260,7 @@ class ProjectionEngine:
             )
             if source is None or target is None:
                 continue
+            visible_node_ids = {node.id for node in ir.nodes}
             if source not in visible_node_ids or target not in visible_node_ids:
                 continue
 

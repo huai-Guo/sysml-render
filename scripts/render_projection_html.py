@@ -67,7 +67,8 @@ def render_html(ir, layout) -> str:
     border: 2px solid #72809b;
     border-radius: 16px;
     background: rgba(246, 248, 252, .72);
-    pointer-events: none;
+    pointer-events: auto;
+    z-index: 1;
   }}
   .root-title {{
     position: absolute;

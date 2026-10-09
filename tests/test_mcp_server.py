@@ -47,6 +47,9 @@ class FakeAdapter:
             "name": "ElectricalSystem",
         }
 
+    def fetch_relationships(self, element_id):
+        return []
+
 
 class FakeWriter:
     def __init__(self, *args, **kwargs):
@@ -157,6 +160,8 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(before["x"] + 90, after["x"])
                 self.assertEqual(before["y"] + 45, after["y"])
 
+    @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "1"})
+    @patch("apps.mcp.server.SysONRestAdapter", FakeAdapter)
     @patch("apps.mcp.server.SysONSemanticWriter", FakeWriter)
     def test_semantic_crud_tools_return_verified_commits(self):
         renamed = rename_element(
@@ -180,6 +185,13 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("new-element", created.element_id)
         self.assertEqual("membership-1", created.membership_id)
         self.assertEqual("commit-3", deleted.commit_id)
+
+    @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "0"})
+    def test_semantic_writes_are_disabled_for_mcp_by_default(self):
+        with self.assertRaisesRegex(ValueError, "disabled"):
+            rename_element("project-1", "part-1", "BackupBattery")
+        with self.assertRaisesRegex(ValueError, "disabled"):
+            delete_element("project-1", "part-1")
 
     @patch("apps.mcp.server.SysONRestAdapter", FakeAdapter)
     def test_get_semantic_element(self):

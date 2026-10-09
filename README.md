@@ -212,3 +212,40 @@ Important invariants include:
 9. add MCP semantic-edit tools with revision/precondition handling.
 
 See PLAN.md and docs/spikes/phase-0-syson.md for the full roadmap.
+
+
+## Experimental semantic editing in Web
+
+The Web editor now separates importing from refreshing:
+
+- Import/paste textual SysML through `POST /api/render`.
+- Refresh an existing semantic project through `POST /api/projects/{projectId}/render`; this **does not reimport** previously submitted source.
+- Click a node in the rendered canvas to inspect/select its semantic identity.
+- When explicitly enabled, rename it, create an owned element or delete an unreferenced leaf definition.
+- After a semantic command succeeds, the Web UI rereads the semantic model and reconstructs the view.
+
+**Semantic writes are disabled by default** because the SysON commit writer has contract/mock tests but has not been validated against a real running SysON v2026.9 instance here. The view stays readable/draggable without enabling model writes.
+
+To enable experimental editing **only against a disposable test SysON project**, before launching Web:
+
+    $env:SYSON_ENABLE_SEMANTIC_WRITES = "1"
+
+Other safeguards:
+
+- derived/typed-port projection nodes cannot be edited as independent semantic objects via the UI;
+- create is restricted to known definition/package element kinds and compatible owners;
+- delete requires typing the exact selected name and API-level confirmation;
+- delete refuses elements with children, type references, or directly reported semantic relationship references;
+- layout changes still only affect `.sysmlview.json` state.
+
+These are MVP guards, not a complete referential-integrity validator. In particular, unreported derived or implicit SysML references may still exist. **Do not enable semantic writes for important models before a live integration review.**
+
+### Run the live SysON semantic smoke
+
+The following script **always creates a fresh project** and never accepts an existing project ID. It validates import, rename, owned-element creation, semantic reread/parent reconstruction, and delete.
+
+    py scripts/syson_semantic_smoke.py --url http://localhost:8080 --allow-writes
+
+The script prints the new project ID and intentionally leaves the test project available for inspection or manual cleanup. It can modify/delete test elements *inside that new project* only.
+
+Unlike the default CI tests, this requires a real running SysON server. CI success by itself must not be taken as proof that real SysON writes or graphical round-tripping work.

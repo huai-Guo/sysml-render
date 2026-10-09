@@ -21,9 +21,6 @@ class SysONRestConfig:
 
     @property
     def effective_commit_id(self) -> str:
-        # Current SysON maps the single project state to a commit with the same
-        # identifier. Keep this configurable so the adapter does not rely on
-        # that implementation detail forever.
         return self.commit_id or self.project_id
 
 
@@ -70,6 +67,7 @@ class SysONRestAdapter:
     ):
         self.config = config
         self.session = session or requests.Session()
+        self._resolved_commit_id: str | None = config.commit_id
 
     def snapshot(self) -> dict[str, Any]:
         raw_elements = self.fetch_elements()
@@ -132,7 +130,7 @@ class SysONRestAdapter:
         url = (
             f"{self.config.base_url.rstrip('/')}/api/rest/projects/"
             f"{self.config.project_id}/commits/"
-            f"{self.config.effective_commit_id}/roots"
+            f"{self._commit_id()}/roots"
         )
         response = self.session.get(
             url,
@@ -206,7 +204,7 @@ class SysONRestAdapter:
             "source": {
                 "kind": "syson-rest",
                 "projectId": self.config.project_id,
-                "commitId": self.config.effective_commit_id,
+                "commitId": self._commit_id(),
             },
             "elements": normalized_elements,
             "relationships": normalized_relationships,
@@ -317,8 +315,34 @@ class SysONRestAdapter:
         return (
             f"{self.config.base_url.rstrip('/')}/api/rest/projects/"
             f"{self.config.project_id}/commits/"
-            f"{self.config.effective_commit_id}/{suffix}"
+            f"{self._commit_id()}/{suffix}"
         )
+
+    def _commit_id(self) -> str:
+        if self._resolved_commit_id:
+            return self._resolved_commit_id
+
+        commits_url = (
+            f"{self.config.base_url.rstrip('/')}/api/rest/projects/"
+            f"{self.config.project_id}/commits"
+        )
+        response = self.session.get(
+            commits_url,
+            headers=self._headers(),
+            timeout=60,
+        )
+        if response.status_code == 200:
+            payload = response.json()
+            if isinstance(payload, list) and payload:
+                candidate = payload[-1].get("@id")
+                if isinstance(candidate, str) and candidate:
+                    self._resolved_commit_id = candidate
+                    return candidate
+
+        # Backward compatibility with older SysON deployments where projectId
+        # was accepted as the single effective commit identifier.
+        self._resolved_commit_id = self.config.project_id
+        return self._resolved_commit_id
 
     def _headers(self) -> dict[str, str]:
         headers = {"Accept": "application/json"}

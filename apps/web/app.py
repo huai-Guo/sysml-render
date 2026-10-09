@@ -499,6 +499,16 @@ INDEX_HTML = r"""<!doctype html>
     white-space: pre-wrap;
   }
   .hint { color: #718097; font-size: 11px; line-height: 1.5; margin-top: 6px; }
+  .semantic-panel { margin-top: 18px; border-top: 1px solid #dfe5ee; padding-top: 16px; }
+  .semantic-panel h2 { font-size: 15px; margin: 0 0 10px; }
+  .semantic-panel .secondary { background: #eaf0f8; color: #203654; }
+  .semantic-panel .danger { background: #fff0f0; color: #a92828; border: 1px solid #f0b7b7; }
+  .semantic-panel .summary { font: 12px/1.5 Consolas, monospace; overflow-wrap: anywhere; color: #50607a; }
+  .semantic-panel [hidden] { display: none; }
+  .semantic-panel button { margin-top: 9px; }
+  .semantic-panel fieldset { border: 0; padding: 0; margin: 12px 0; }
+  .semantic-panel fieldset:disabled { opacity: .55; }
+
 </style>
 </head>
 <body>
@@ -545,9 +555,31 @@ INDEX_HTML = r"""<!doctype html>
       <button id="render-button" type="submit">导入并自动渲染</button>
       <div id="status">等待输入</div>
     </form>
+    <section class="semantic-panel" aria-label="语义编辑">
+      <h2>语义编辑</h2>
+      <p id="editor-mode" class="hint">检查写入能力…</p>
+      <button type="button" id="refresh-project" class="secondary" disabled>重新读取当前项目（不重复导入）</button>
+      <div id="selected-element" class="summary">点击图中的节点选择元素。</div>
+      <fieldset id="semantic-actions" disabled>
+        <label for="rename-value">修改元素名称</label>
+        <input id="rename-value" placeholder="例如 BackupBattery">
+        <button type="button" id="rename-element">保存语义名称</button>
+        <label for="new-element-kind">在选中容器内创建</label>
+        <select id="new-element-kind">
+          <option value="PartDefinition">PartDefinition</option>
+          <option value="PortDefinition">PortDefinition</option>
+          <option value="ItemDefinition">ItemDefinition</option>
+          <option value="RequirementDefinition">RequirementDefinition</option>
+          <option value="Package">Package</option>
+        </select>
+        <input id="new-element-name" placeholder="新元素名称">
+        <button type="button" id="create-element" class="secondary">创建子元素</button>
+        <button type="button" id="delete-element" class="danger">删除选中元素（需确认）</button>
+      </fieldset>
+    </section>
   </aside>
   <section class="viewer">
-    <iframe id="preview" title="SysML preview"></iframe>
+    <iframe id="preview" title="SysML preview" sandbox="allow-scripts"></iframe>
   </section>
 </main>
 <script>
@@ -556,6 +588,125 @@ const button = document.getElementById("render-button");
 const status = document.getElementById("status");
 const preview = document.getElementById("preview");
 let currentRender = null;
+let selectedNode = null;
+let writesEnabled = false;
+const actions = document.getElementById("semantic-actions");
+const selectedLabel = document.getElementById("selected-element");
+const modeLabel = document.getElementById("editor-mode");
+const refreshButton = document.getElementById("refresh-project");
+const renameValue = document.getElementById("rename-value");
+
+async function requestJSON(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.detail || JSON.stringify(result));
+  return result;
+}
+
+function setRender(payload) {
+  currentRender = payload;
+  selectedNode = null;
+  preview.srcdoc = payload.previewHtml;
+  actions.disabled = true;
+  selectedLabel.textContent = "点击图中的节点选择元素。";
+  refreshButton.disabled = false;
+  status.textContent =
+    "渲染完成\nproject: " + payload.projectId +
+    "\nroot: " + payload.rootSemanticId +
+    "\nprofile: " + payload.profile +
+    "\nnodes: " + payload.graph.nodes.length +
+    " / edges: " + payload.graph.edges.length;
+}
+
+async function refreshProject() {
+  if (!currentRender) return;
+  const payload = await requestJSON(
+    "/api/projects/" + encodeURIComponent(currentRender.projectId) + "/render",
+    {select: currentRender.rootSemanticId, profile: currentRender.profile}
+  );
+  setRender(payload);
+}
+
+async function applySemantic(command) {
+  if (!currentRender || !selectedNode || !writesEnabled || selectedNode.derived) return;
+  const projectId = currentRender.projectId;
+  status.textContent = "正在提交语义修改…";
+  const result = await requestJSON(
+    "/api/projects/" + encodeURIComponent(projectId) + "/semantic-commands",
+    command
+  );
+  status.textContent = "写入已验证；正在重新读取语义模型…";
+  try {
+    await refreshProject();
+    status.textContent += "\n语义操作：" + result.kind + " 已验证";
+  } catch (error) {
+    status.textContent = "语义修改已提交，但重新渲染失败：" + error.message;
+  }
+}
+
+async function loadCapabilities() {
+  try {
+    const response = await fetch("/api/capabilities");
+    const capabilities = await response.json();
+    writesEnabled = capabilities.semanticWritesEnabled === true;
+    modeLabel.textContent = writesEnabled
+      ? "实验模式已开启。请仅在可丢弃的 SysON 测试项目中进行写操作。"
+      : "语义写入默认关闭；只读图和布局编辑仍可使用。";
+  } catch (error) {
+    modeLabel.textContent = "无法获取语义编辑能力：" + error.message;
+  }
+}
+loadCapabilities();
+
+function showError(error) {
+  status.textContent = "操作失败：" + error.message;
+}
+
+refreshButton.addEventListener("click", async () => {
+  refreshButton.disabled = true;
+  try { await refreshProject(); } catch (error) { showError(error); }
+  finally { refreshButton.disabled = false; }
+});
+
+document.getElementById("rename-element").addEventListener("click", async () => {
+  if (!selectedNode) return;
+  try {
+    await applySemantic({
+      kind: "rename_element",
+      element_id: selectedNode.semanticId,
+      new_name: renameValue.value
+    });
+  } catch (error) { showError(error); }
+});
+document.getElementById("create-element").addEventListener("click", async () => {
+  if (!selectedNode) return;
+  try {
+    await applySemantic({
+      kind: "create_owned_element",
+      owner_id: selectedNode.semanticId,
+      element_type: document.getElementById("new-element-kind").value,
+      new_name: document.getElementById("new-element-name").value
+    });
+  } catch (error) { showError(error); }
+});
+document.getElementById("delete-element").addEventListener("click", async () => {
+  if (!selectedNode) return;
+  const entered = window.prompt(
+    "此操作会修改 SysML 语义。输入元素名称确认删除：" + selectedNode.label
+  );
+  if (entered !== selectedNode.label) return;
+  try {
+    await applySemantic({
+      kind: "delete_element",
+      element_id: selectedNode.semanticId,
+      confirmed: true
+    });
+  } catch (error) { showError(error); }
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -572,17 +723,9 @@ form.addEventListener("submit", async (event) => {
       throw new Error(payload.detail || JSON.stringify(payload));
     }
 
-    currentRender = payload;
-    preview.srcdoc = payload.previewHtml;
+    setRender(payload);
     const projectInput = form.querySelector('[name="project_id"]');
     if (projectInput && !projectInput.value) projectInput.value = payload.projectId;
-    status.textContent =
-      "渲染完成\n" +
-      "project: " + payload.projectId + "\n" +
-      "view: " + payload.viewId + "\n" +
-      "root: " + payload.rootSemanticId + "\n" +
-      "profile: " + payload.profile + "\n" +
-      "nodes: " + payload.graph.nodes.length + " / edges: " + payload.graph.edges.length;
   } catch (error) {
     status.textContent = "失败：\n" + error.message;
   } finally {
@@ -591,10 +734,30 @@ form.addEventListener("submit", async (event) => {
 });
 
 window.addEventListener("message", async (event) => {
+  if (event.source !== preview.contentWindow || !currentRender) return;
   const message = event.data;
-  if (!currentRender || !message || message.type !== "sysml-render:layout-change") {
+  if (!message || typeof message !== "object") return;
+
+  if (message.type === "sysml-render:select-node") {
+    const candidate = currentRender.graph.nodes.find(n => n.id === message.node?.id);
+    if (!candidate) return;
+    selectedNode = {
+      id: candidate.id,
+      semanticId: candidate.semantic_id,
+      label: candidate.label,
+      kind: candidate.kind,
+      derived: candidate.derived
+    };
+    renameValue.value = candidate.label;
+    selectedLabel.textContent =
+      candidate.label + " · " + candidate.kind + "\n" + candidate.semantic_id +
+      (candidate.derived ? "\n类型投影节点：不可直接语义编辑" : "");
+    actions.disabled = !writesEnabled || Boolean(candidate.derived);
     return;
   }
+
+  if (message.type !== "sysml-render:layout-change" ||
+      !currentRender.graph.nodes.some(n => n.id === message.nodeId)) return;
 
   try {
     const response = await fetch(

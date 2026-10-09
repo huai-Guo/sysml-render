@@ -29,7 +29,7 @@ class FakeResponse:
 
 class FakeSession:
     def __init__(self):
-        self.commits = ["commit-0"]
+        self.commits = ["project-1"]
         self.elements = {
             "part-1": {
                 "@id": "part-1",
@@ -64,8 +64,7 @@ class FakeSession:
 
     def post(self, url, json=None, **kwargs):
         self.posts.append((url, json))
-        next_commit = f"commit-{len(self.commits)}"
-        self.commits.append(next_commit)
+        next_commit = "project-1"  # SysON currently returns one effective commit
 
         for change in json.get("change", []):
             identity = change.get("identity")
@@ -123,7 +122,7 @@ class SysONSemanticWriterTests(unittest.TestCase):
         self.assertEqual("part-1", change["identity"]["@id"])
         self.assertEqual("PartDefinition", change["payload"]["@type"])
         self.assertEqual("BackupBattery", change["payload"]["declaredName"])
-        self.assertEqual("commit-0", body["previousCommit"]["@id"])
+        self.assertNotIn("previousCommit", body)
 
     def test_delete_omits_payload_and_verifies_404(self):
         writer, session = self.make_writer()
@@ -152,8 +151,9 @@ class SysONSemanticWriterTests(unittest.TestCase):
         first_body = session.posts[0][1]
         second_body = session.posts[1][1]
 
-        self.assertEqual("commit-0", first_body["previousCommit"]["@id"])
-        self.assertEqual("commit-1", second_body["previousCommit"]["@id"])
+        self.assertNotIn("previousCommit", first_body)
+        self.assertNotIn("previousCommit", second_body)
+        self.assertEqual("project-1", result.commit_id)
         self.assertEqual(
             "OwningMembership",
             first_body["change"][0]["payload"]["@type"],

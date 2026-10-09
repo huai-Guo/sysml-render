@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ if str(PROTOTYPE) not in sys.path:
 
 from apps.mcp.server import (
     apply_layout_command,
+    create_connection,
     create_owned_element,
     delete_element,
     get_semantic_element,
@@ -104,6 +106,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
                 "render_project",
                 "get_view",
                 "apply_layout_command",
+                "create_connection",
                 "rename_element",
                 "create_owned_element",
                 "delete_element",
@@ -166,6 +169,60 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(before["x"] + 90, after["x"])
                 self.assertEqual(before["y"] + 45, after["y"])
+
+    @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "1"})
+    def test_create_connection_uses_same_core_as_web(self):
+        before = FakeAdapter().snapshot()
+        after = json.loads(json.dumps(before))
+        after["relationships"].append({
+            "id": "conn:BatteryToMotor",
+            "name": "BatteryToMotor",
+            "kind": "ConnectionUsage",
+            "ownerId": "partdef:ElectricalSystem",
+            "sourcePath": ["battery", "powerOut"],
+            "targetPath": ["motor", "powerIn"],
+        })
+        captured = []
+
+        class FakeImporter:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def fetch_editing_context_id(self, project_id):
+                return "editing-1"
+
+        class FakeText:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def insert(self, **kwargs):
+                captured.append(kwargs)
+                return SimpleNamespace(acknowledged=True, messages=())
+
+        with (
+            patch("apps.mcp.server._adapter", side_effect=[
+                SimpleNamespace(snapshot=lambda: before),
+                SimpleNamespace(snapshot=lambda: after),
+            ]),
+            patch("apps.mcp.server.SysONImporter", FakeImporter),
+            patch("apps.mcp.server.SysONTextualWriter", FakeText),
+        ):
+            response = create_connection(
+                "project-1",
+                "partdef:ElectricalSystem",
+                "projection:part:ElectricalSystem.battery/port:Battery.powerOut",
+                "projection:part:ElectricalSystem.motor/port:Motor.powerIn",
+                "BatteryToMotor",
+            )
+
+        self.assertTrue(response.acknowledged)
+        self.assertTrue(response.observed_in_model)
+        self.assertTrue(response.edge_visible)
+        self.assertTrue(response.verified)
+        self.assertEqual(
+            "connection BatteryToMotor connect battery.powerOut to motor.powerIn;",
+            captured[0]["textual_content"],
+        )
 
     @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "1"})
     @patch("apps.mcp.server.SysONRestAdapter", FakeAdapter)

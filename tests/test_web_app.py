@@ -74,6 +74,22 @@ class FakeAdapterWithLeaf(FakeAdapter):
         return data
 
 
+class FakeImporterWithContext(FakeImporter):
+    def fetch_editing_context_id(self, project_id):
+        return "editing-web"
+
+
+class FakeTextualWriter:
+    calls = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def insert(self, *, editing_context_id, owner_element_id, textual_content):
+        self.calls.append((editing_context_id, owner_element_id, textual_content))
+        return SimpleNamespace(acknowledged=True, messages=())
+
+
 class WebAppTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
@@ -188,6 +204,95 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("partdef:ElectricalSystem", response.json()["rootSemanticId"])
         self.assertEqual(2, len(response.json()["graph"]["edges"]))
+
+    def _connection_snapshot(self, *, include_new_connection=False):
+        source = FakeAdapter().snapshot()
+        if include_new_connection:
+            source["relationships"].append({
+                "id": "new-edge",
+                "name": "batteryToMotor",
+                "kind": "ConnectionUsage",
+                "ownerId": "partdef:ElectricalSystem",
+                "sourcePath": ["battery", "powerOut"],
+                "targetPath": ["motor", "powerIn"],
+            })
+        return source
+
+    def _connection_request(self, *, source=None, target=None, name=None):
+        return {
+            "kind": "create_connection",
+            "root_element_id": "partdef:ElectricalSystem",
+            "source_node_id": source or (
+                "projection:part:ElectricalSystem.battery/port:Battery.powerOut"
+            ),
+            "target_node_id": target or (
+                "projection:part:ElectricalSystem.motor/port:Motor.powerIn"
+            ),
+            "new_name": name or "batteryToMotor",
+        }
+
+    @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "1"})
+    def test_create_connection_writes_sysml_and_observes_graph_edge(self):
+        FakeTextualWriter.calls.clear()
+        with (
+            patch("apps.web.app._semantic_snapshot", side_effect=[
+                self._connection_snapshot(),
+                self._connection_snapshot(include_new_connection=True),
+            ]),
+            patch("apps.web.app.SysONTextualWriter", FakeTextualWriter),
+            patch("apps.web.app.SysONImporter", FakeImporterWithContext),
+        ):
+            response = self.client.post(
+                "/api/projects/project-web/semantic-commands",
+                json=self._connection_request(),
+            )
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertTrue(response.json()["acknowledged"])
+        self.assertTrue(response.json()["observedInModel"])
+        self.assertTrue(response.json()["edgeVisible"])
+        self.assertTrue(response.json()["verified"])
+        self.assertEqual(
+            "connection batteryToMotor connect battery.powerOut to motor.powerIn;",
+            FakeTextualWriter.calls[-1][2],
+        )
+
+    @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "1"})
+    def test_rejects_invalid_and_duplicate_connection_before_write(self):
+        FakeTextualWriter.calls.clear()
+        with (
+            patch("apps.web.app._semantic_snapshot", return_value=self._connection_snapshot()),
+            patch("apps.web.app.SysONTextualWriter", FakeTextualWriter),
+        ):
+            invalid = self.client.post(
+                "/api/projects/project-web/semantic-commands",
+                json=self._connection_request(target="part:ElectricalSystem.motor"),
+            )
+            duplicate = self.client.post(
+                "/api/projects/project-web/semantic-commands",
+                json=self._connection_request(target=(
+                    "projection:part:ElectricalSystem.controller/port:Controller.powerIn"
+                )),
+            )
+        self.assertEqual(409, invalid.status_code)
+        self.assertEqual(409, duplicate.status_code)
+        self.assertEqual([], FakeTextualWriter.calls)
+
+    @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "1"})
+    def test_reports_partial_semantic_write_without_claiming_visible_edge(self):
+        with (
+            patch("apps.web.app._semantic_snapshot", return_value=self._connection_snapshot()),
+            patch("apps.web.app.SysONTextualWriter", FakeTextualWriter),
+            patch("apps.web.app.SysONImporter", FakeImporterWithContext),
+        ):
+            response = self.client.post(
+                "/api/projects/project-web/semantic-commands",
+                json=self._connection_request(),
+            )
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json()["acknowledged"])
+        self.assertFalse(response.json()["verified"])
+        self.assertFalse(response.json()["observedInModel"])
+        self.assertFalse(response.json()["edgeVisible"])
 
     @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "0"})
     def test_semantic_edit_disabled_by_default(self):

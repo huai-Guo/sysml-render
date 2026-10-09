@@ -25,6 +25,7 @@ from render_projection_html import render_html
 from render_service import RenderService
 from selection import SemanticSelector
 from view_state import FileViewStateStore, ViewIdentity
+from reference_integrity import audit_delete
 from semantic_commands import (
     CreateOwnedElementCommand,
     DeleteElementCommand,
@@ -120,6 +121,14 @@ def _adapter(project_id: str) -> SysONRestAdapter:
             token=_syson_token(),
         )
     )
+
+
+def _require_semantic_writes() -> None:
+    if os.environ.get("SYSON_ENABLE_SEMANTIC_WRITES") != "1":
+        raise ValueError(
+            "Experimental semantic writes disabled. "
+            "Enable SYSON_ENABLE_SEMANTIC_WRITES=1 only with a disposable SysON project."
+        )
 
 
 def _semantic_writer(project_id: str) -> SysONSemanticWriter:
@@ -348,6 +357,7 @@ def rename_element(
     new_name: str,
 ) -> SemanticWriteToolResult:
     """Rename one SysML semantic element through the SysML v2 commit API."""
+    _require_semantic_writes()
     result = _semantic_writer(project_id).apply(
         RenameElementCommand(
             element_id=element_id,
@@ -372,6 +382,7 @@ def create_owned_element(
     name: str,
 ) -> SemanticWriteToolResult:
     """Create a SysML semantic element owned by another semantic element."""
+    _require_semantic_writes()
     result = _semantic_writer(project_id).apply(
         CreateOwnedElementCommand(
             owner_id=owner_id,
@@ -395,6 +406,16 @@ def delete_element(
     element_id: str,
 ) -> SemanticWriteToolResult:
     """Delete one SysML semantic element through the SysML v2 commit API."""
+    _require_semantic_writes()
+    adapter = _adapter(project_id)
+    snapshot = adapter.snapshot()
+    try:
+        relationships = adapter.fetch_relationships(element_id)
+    except Exception:
+        relationships = None
+    audit = audit_delete(snapshot, element_id, server_relationships=relationships)
+    if not audit.safe:
+        raise ValueError("Deletion blocked: " + "; ".join(audit.reasons))
     result = _semantic_writer(project_id).apply(
         DeleteElementCommand(element_id=element_id)
     )

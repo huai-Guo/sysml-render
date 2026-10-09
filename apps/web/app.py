@@ -23,6 +23,11 @@ if str(SCRIPTS) not in sys.path:
 
 from adapters.syson.importer import SysONImportError, SysONImporter
 from adapters.syson.semantic_writer import SysONSemanticWriter, SysONSemanticWriterError
+from adapters.syson.textual_writer import SysONTextualWriter, SysONTextualWriteError
+from connection_editing import (
+    ConnectionValidationError, compile_canvas_connection,
+    connection_visible, connection_in_semantic_snapshot,
+)
 from prototype.semantic_commands import (RenameElementCommand, DeleteElementCommand, CreateOwnedElementCommand)
 from adapters.syson.rest_adapter import SysONAdapterError, SysONRestAdapter, SysONRestConfig
 from render_projection_html import render_html
@@ -65,12 +70,15 @@ class ProjectRenderRequest(BaseModel):
 
 
 class SemanticEditRequest(BaseModel):
-    kind: Literal["rename_element", "create_owned_element", "delete_element"]
+    kind: Literal["rename_element", "create_owned_element", "delete_element", "create_connection"]
     element_id: str | None = None
     owner_id: str | None = None
     new_name: str | None = None
     element_type: str | None = None
     confirmed: bool = False
+    root_element_id: str | None = None
+    source_node_id: str | None = None
+    target_node_id: str | None = None
 
 
 CREATABLE_TYPES = frozenset({
@@ -183,6 +191,57 @@ def apply_semantic_command(project_id: str, request: SemanticEditRequest):
 
     snapshot = _semantic_snapshot(project_id)
     elements = {item["id"]: item for item in snapshot.get("elements", [])}
+    if request.kind == "create_connection":
+        if not (request.root_element_id and request.source_node_id and request.target_node_id):
+            raise HTTPException(422, "Connection requires root and two port node IDs.")
+        name = _validate_name(request.new_name)
+        try:
+            plan = compile_canvas_connection(
+                snapshot,
+                request.root_element_id,
+                request.source_node_id,
+                request.target_node_id,
+                name,
+            )
+        except ConnectionValidationError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        try:
+            editing_context_id = SysONImporter(
+                syson_url(), token=syson_token()
+            ).fetch_editing_context_id(project_id)
+            insertion = SysONTextualWriter(
+                syson_url(), token=syson_token()
+            ).insert(
+                editing_context_id=editing_context_id,
+                owner_element_id=plan.parent_id,
+                textual_content=plan.textual_content,
+            )
+        except (SysONImportError, SysONTextualWriteError) as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+        try:
+            refreshed = _semantic_snapshot(project_id)
+            model_observed = connection_in_semantic_snapshot(refreshed, plan)
+            visible = connection_visible(refreshed, plan)
+        except (SysONAdapterError, ValueError):
+            # SysON accepted the write, but post-write reading failed. Report
+            # partial success; the client must not silently retry the insert.
+            model_observed = False
+            visible = False
+        return {
+            "projectId": project_id,
+            "kind": "create_connection",
+            "sourcePath": list(plan.source_path),
+            "targetPath": list(plan.target_path),
+            "textualContent": plan.textual_content,
+            "acknowledged": insertion.acknowledged,
+            "observedInModel": model_observed,
+            "edgeVisible": visible,
+            "verified": model_observed and visible,
+            "messages": list(insertion.messages),
+            "refreshRequired": True,
+        }
+
     if request.kind == "rename_element":
         item = _require_element(elements, request.element_id)
         name = _validate_name(request.new_name)

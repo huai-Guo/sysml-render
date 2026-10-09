@@ -280,8 +280,8 @@ def apply_semantic_command(project_id: str, request: SemanticEditRequest):
             raise HTTPException(409, "Deletion requires explicit confirmation.")
         try:
             related = _server_relationships(project_id, item["id"])
-        except (SysONAdapterError, ValueError):
-            related = None  # Fail closed if the backend cannot supply evidence.
+        except Exception:
+            related = None  # Fail closed on network/adapter/unknown errors.
         audit = audit_delete(
             snapshot,
             item["id"],

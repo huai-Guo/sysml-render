@@ -38,7 +38,14 @@ class FakeAdapter:
             / "nested-system"
             / "vehicle-semantic.json"
         )
-        return json.loads(fixture.read_text(encoding="utf-8"))
+        snapshot = json.loads(fixture.read_text(encoding="utf-8"))
+        snapshot["elements"].append({
+            "id": "partdef:Orphan",
+            "name": "Orphan",
+            "kind": "PartDefinition",
+            "parentId": "pkg:Definitions",
+        })
+        return snapshot
 
     def fetch_element(self, element_id):
         return {
@@ -177,7 +184,7 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         )
         deleted = delete_element(
             "project-1",
-            "part-1",
+            "partdef:Orphan",
         )
 
         self.assertTrue(renamed.verified)

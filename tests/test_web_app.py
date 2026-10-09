@@ -352,6 +352,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual("NewSensor", FakeWriter.calls[-1].name)
 
     @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "1"})
+    @patch("apps.web.app._server_relationships", return_value=[])
     @patch("apps.web.app.SysONSemanticWriter", FakeWriter)
     @patch("apps.web.app.SysONRestAdapter", FakeAdapterWithLeaf)
     def test_delete_requires_confirmation_and_rejects_referenced_definitions(self):
@@ -380,6 +381,33 @@ class WebAppTests(unittest.TestCase):
         )
         self.assertEqual(200, allowed.status_code)
         self.assertEqual("partdef:Orphan", FakeWriter.calls[-1].element_id)
+
+    @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "1"})
+    @patch("apps.web.app._server_relationships", return_value=[{"@id": "membership", "@type": "OwningMembership"}])
+    @patch("apps.web.app.SysONSemanticWriter", FakeWriter)
+    @patch("apps.web.app.SysONRestAdapter", FakeAdapterWithLeaf)
+    def test_delete_refuses_unknown_server_associations(self):
+        FakeWriter.calls.clear()
+        response = self.client.post(
+            "/api/projects/project-web/semantic-commands",
+            json={"kind": "delete_element", "element_id": "partdef:Orphan", "confirmed": True},
+        )
+        self.assertEqual(409, response.status_code)
+        self.assertIn("associated relationship", response.text)
+        self.assertEqual([], FakeWriter.calls)
+
+    @patch.dict(os.environ, {"SYSON_ENABLE_SEMANTIC_WRITES": "1"})
+    @patch("apps.web.app._server_relationships", side_effect=RuntimeError("backend down"))
+    @patch("apps.web.app.SysONSemanticWriter", FakeWriter)
+    @patch("apps.web.app.SysONRestAdapter", FakeAdapterWithLeaf)
+    def test_delete_fails_closed_if_reference_query_is_unavailable(self):
+        FakeWriter.calls.clear()
+        response = self.client.post(
+            "/api/projects/project-web/semantic-commands",
+            json={"kind": "delete_element", "element_id": "partdef:Orphan", "confirmed": True},
+        )
+        self.assertEqual(409, response.status_code)
+        self.assertEqual([], FakeWriter.calls)
 
     def test_web_exposes_selection_and_refresh_controls(self):
         html = self.client.get("/").text

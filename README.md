@@ -4,6 +4,10 @@ Web-first SysML v2 automatic renderer and editable diagram workbench.
 
 Core principle: a renderer should not force users to manually reconstruct relationships that already exist in the SysML semantic model.
 
+## Production agent integration
+
+The multi-user agent uses the separate authenticated, stateless [semantic SVG service](docs/production-service.md). It accepts the official Pilot semantic export and preserves source hashes and relationship provenance. Deploy it on the agent's private component network. The SysON workbench below remains an internal editing tool.
+
 ## Current pipeline
 
     SysML text / .sysml

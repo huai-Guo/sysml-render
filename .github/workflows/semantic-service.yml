@@ -1,0 +1,20 @@
+name: semantic-image-service
+on:
+  pull_request:
+  push:
+    branches: [main, feat/production-render]
+permissions: {contents: read}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install uv==0.12.13
+      - run: uv sync --frozen --extra dev
+      - run: uv run pytest tests/service -q
+      - run: docker build -t sysml-render:ci .
+      - run: uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file /tmp/requirements.txt
+      - run: uvx pip-audit --requirement /tmp/requirements.txt --disable-pip --no-deps

@@ -63,3 +63,19 @@ def test_anonymous_semantic_feature_paths_materialize_connections():
     assert "battery.output" in result["svg"] and "motor.input" in result["svg"]
     assert result["coverage"]["displayed_relations"] == 2
     assert result["coverage"]["projected_feature_paths"] == 2
+
+
+def test_readiness_checks_renderer_with_auth_and_safe_failure(monkeypatch):
+    monkeypatch.setenv("SYSML_RENDER_SERVICE_TOKEN", "x" * 32)
+    with TestClient(app) as client:
+        headers = {"Authorization": "Bearer " + "x" * 32}
+        assert client.get("/health/ready").status_code == 401
+        assert client.get("/health/ready", headers=headers).json() == {"status": "ready"}
+
+        def broken(value):
+            raise RuntimeError("private internal failure")
+
+        monkeypatch.setattr("sysml_render.api.render_svg", broken)
+        response = client.get("/health/ready", headers=headers)
+        assert response.status_code == 503 and response.json() == {"status": "unavailable"}
+        assert client.get("/health/live").status_code == 200

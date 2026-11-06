@@ -52,6 +52,22 @@ def live():
     return {"status": "ok"}
 
 
+@app.get("/health/ready", dependencies=[Depends(authorized)])
+def ready():
+    try:
+        result = render_svg(RenderRequest(
+            source_sha256="0" * 64,
+            semantic_model={"schema_version": "1", "entities": [
+                {"id": "ready", "kind": "Package", "name": "Ready"}
+            ], "relations": []},
+        ))
+        if not result.get("svg"):
+            raise RuntimeError("Renderer self-check failed")
+    except Exception:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    return {"status": "ready"}
+
+
 @app.post("/v1/render", dependencies=[Depends(authorized)])
 def render(request: RenderRequest):
     try:
